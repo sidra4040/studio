@@ -8,7 +8,7 @@ import {
 import {
   generateDefectDojoQueries as generateDefectDojoQueriesFlow,
   type GenerateDefectDojoQueriesInput,
-  type GenerateDojoQueriesOutput,
+  type GenerateDefectDojoQueriesOutput,
 } from "@/ai/flows/generate-defectdojo-queries";
 
 export async function answerVulnerabilityQuestions(
@@ -18,7 +18,7 @@ export async function answerVulnerabilityQuestions(
 }
 
 export async function generateDefectDojoQueries(
-  input: GenerateDojoQueriesInput
-): Promise<GenerateDojoQueriesOutput> {
-  return await generateDojoQueriesFlow(input);
+  input: GenerateDefectDojoQueriesInput
+): Promise<GenerateDefectDojoQueriesOutput> {
+  return await generateDefectDojoQueriesFlow(input);
 }
