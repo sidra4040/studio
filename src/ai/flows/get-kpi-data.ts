@@ -2,13 +2,16 @@
 /**
  * @fileOverview An AI flow to retrieve and aggregate KPI data for the dashboard.
  * 
- * - getKpiData - A function that fetches data for the KPI dashboard.
+ * - getKpiData - A function that fetches data for the KPI dashboard from DefectDojo.
  * - KpiData - The return type for the getKpiData function.
  */
 
-import { ai } from '@/ai/genkit';
 import { z } from 'genkit';
-import { answerVulnerabilityQuestions } from './answer-vulnerability-questions';
+import { 
+    getVulnerabilityCountBySeverity,
+    getOpenVsClosedCounts,
+    getTopVulnerableProducts
+} from '@/services/defectdojo';
 
 const KpiDataSchema = z.object({
     vulnerabilitiesBySeverity: z.array(z.object({
@@ -28,40 +31,46 @@ const KpiDataSchema = z.object({
 
 export type KpiData = z.infer<typeof KpiDataSchema>;
 
-// This function simulates fetching real data. In a real-world scenario,
-// you would replace this with actual calls to your data sources (e.g., DefectDojo API).
-// For demonstration, we'll return static data after a short delay to simulate network latency.
-async function getKpiDataFlow(): Promise<KpiData> {
-    
-    // Simulate network delay
-    await new Promise(resolve => setTimeout(resolve, 1500));
-    
-    const kpiData: KpiData = {
-        vulnerabilitiesBySeverity: [
-            { severity: 'Critical', count: 15 },
-            { severity: 'High', count: 45 },
-            { severity: 'Medium', count: 120 },
-            { severity: 'Low', count: 250 },
-            { severity: 'Info', count: 300 },
-        ],
-        openVsClosed: [
-            { name: 'Open', value: 180, fill: 'hsl(var(--destructive))' },
-            { name: 'Closed', value: 550, fill: 'hsl(var(--chart-2))' },
-        ],
-        topVulnerableProducts: [
-            { product: 'Legacy API', vulnerabilities: 78 },
-            { product: 'Mobile App v2', vulnerabilities: 55 },
-            { product: 'Data Processor', vulnerabilities: 42 },
-            { product: 'WebApp Gateway', vulnerabilities: 31 },
-            { product: 'Internal Dashboard', vulnerabilities: 25 },
-        ]
-    };
-    
-    return kpiData;
-}
-
 export async function getKpiData(): Promise<KpiData> {
-    // In a real implementation, you might use a Genkit flow here to orchestrate
-    // multiple data fetching tools. For this example, we call our simulated function.
-    return getKpiDataFlow();
+    try {
+        console.log("Fetching live KPI data from DefectDojo...");
+        // Fetch all data in parallel
+        const [severityCounts, openClosedCounts, topProducts] = await Promise.all([
+            getVulnerabilityCountBySeverity(),
+            getOpenVsClosedCounts(),
+            getTopVulnerableProducts()
+        ]);
+
+        const kpiData: KpiData = {
+            vulnerabilitiesBySeverity: Object.entries(severityCounts).map(([severity, count]) => ({
+                severity,
+                count,
+            })),
+            openVsClosed: [
+                { name: 'Open', value: openClosedCounts.open, fill: 'hsl(var(--destructive))' },
+                { name: 'Closed', value: openClosedCounts.closed, fill: 'hsl(var(--chart-2))' },
+            ],
+            topVulnerableProducts: topProducts,
+        };
+        
+        console.log("Successfully fetched KPI data.");
+        return kpiData;
+    } catch (error) {
+        console.error("Failed to fetch KPI data from DefectDojo:", error);
+        // Return empty/default data on error so the page doesn't crash
+        return {
+            vulnerabilitiesBySeverity: [
+                { severity: 'Critical', count: 0 },
+                { severity: 'High', count: 0 },
+                { severity: 'Medium', count: 0 },
+                { severity: 'Low', count: 0 },
+                { severity: 'Info', count: 0 },
+            ],
+            openVsClosed: [
+                { name: 'Open', value: 0, fill: 'hsl(var(--destructive))' },
+                { name: 'Closed', value: 0, fill: 'hsl(var(--chart-2))' },
+            ],
+            topVulnerableProducts: [],
+        };
+    }
 }

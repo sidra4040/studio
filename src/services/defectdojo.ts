@@ -2,7 +2,20 @@
 
 import { z } from 'zod';
 
-// A simplified schema for demonstration. A real app might have a more detailed one.
+const API_URL = process.env.DEFECTDOJO_API_URL;
+const API_KEY = process.env.DEFECTDOJO_API_KEY;
+
+// Schemas for API responses
+const ProductSchema = z.object({
+    id: z.number(),
+    name: z.string(),
+});
+
+const ProductListSchema = z.object({
+    count: z.number(),
+    results: z.array(ProductSchema),
+});
+
 const FindingSchema = z.object({
     id: z.number(),
     title: z.string(),
@@ -10,52 +23,72 @@ const FindingSchema = z.object({
     description: z.string(),
     mitigation: z.string().nullable(),
     active: z.boolean(),
+    product: z.object({
+        id: z.number(),
+        name: z.string(),
+    }).optional(), // For prefetched data
 });
 
-const ApiResponseSchema = z.object({
+const FindingListSchema = z.object({
     count: z.number(),
-    next: z.string().nullable(),
-    previous: z.string().nullable(),
     results: z.array(FindingSchema),
 });
 
-/**
- * Fetches findings from the DefectDojo API and returns a summary.
- * @param queryParams - The query string parameters for the API request (e.g., 'severity=Critical').
- * @returns A JSON string summary of the findings for the LLM to process.
- */
-export async function getDefectDojoFindings(queryParams: string): Promise<string> {
-    const apiUrl = process.env.DEFECTDOJO_API_URL;
-    const apiKey = process.env.DEFECTDOJO_API_KEY;
-
-    if (!apiUrl || !apiKey) {
-        console.error('DefectDojo API URL or Key is not configured.');
-        return JSON.stringify({ error: 'DefectDojo API credentials are not configured on the server.' });
+// A helper to make authenticated requests to the DefectDojo API
+async function defectDojoFetch(endpoint: string, options: RequestInit = {}) {
+    if (!API_URL || !API_KEY) {
+        throw new Error('DefectDojo API URL or Key is not configured.');
     }
 
-    const fullUrl = `${apiUrl}/api/v2/findings/?${queryParams}`;
+    const url = `${API_URL}${endpoint}`;
+    console.log(`Querying DefectDojo: ${url}`);
 
+    const response = await fetch(url, {
+        ...options,
+        headers: {
+            ...options.headers,
+            'Content-Type': 'application/json',
+            'Authorization': `Token ${API_KEY}`,
+        },
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`DefectDojo API Error (${response.status}): ${errorText}`);
+        throw new Error(`Failed to fetch from DefectDojo: ${response.status} ${response.statusText}`);
+    }
+
+    return response.json();
+}
+
+/**
+ * Gets a list of all products from DefectDojo.
+ */
+export async function getProductList() {
     try {
-        console.log(`Querying DefectDojo: ${fullUrl}`);
-        const response = await fetch(fullUrl, {
-            method: 'GET',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Token ${apiKey}`,
-            },
-        });
-
-        if (!response.ok) {
-            const errorText = await response.text();
-            console.error(`DefectDojo API Error: ${response.status}`, errorText);
-            return JSON.stringify({ error: `Failed to fetch data from DefectDojo. Status: ${response.status}` });
+        const data = await defectDojoFetch('/api/v2/products/?limit=1000'); // Assume max 1000 products
+        const parsedData = ProductListSchema.safeParse(data);
+        if (!parsedData.success) {
+            throw new Error('Failed to parse product list from DefectDojo.');
         }
+        return parsedData.data.results.map(p => p.name);
+    } catch (error) {
+        return { error: error instanceof Error ? error.message : String(error) };
+    }
+}
 
-        const data = await response.json();
-        const parsedData = ApiResponseSchema.safeParse(data);
+/**
+ * Fetches findings from DefectDojo and returns a detailed summary.
+ * @param queryParams - The query string for the API request (e.g., 'severity=Critical').
+ * @returns A JSON string summary of the findings for the LLM to process.
+ */
+export async function getFindings(queryParams: string): Promise<string> {
+    try {
+        const data = await defectDojoFetch(`/api/v2/findings/?${queryParams}`);
+        const parsedData = FindingListSchema.safeParse(data);
 
         if (!parsedData.success) {
-            console.error('Failed to parse DefectDojo API response:', parsedData.error);
+            console.error('Failed to parse DefectDojo API findings response:', parsedData.error);
             return JSON.stringify({ error: 'Invalid data structure received from DefectDojo API.' });
         }
 
@@ -63,23 +96,80 @@ export async function getDefectDojoFindings(queryParams: string): Promise<string
             return JSON.stringify({ message: 'No findings found for the specified query.' });
         }
         
-        // Return a summary as a JSON string for the LLM to process.
-        // Summarize to avoid overly large payloads. We'll take the top 10.
+        // Return a detailed summary for the LLM to process. Limit to top 10 for brevity.
         const summary = {
             totalCount: parsedData.data.count,
-            showing: parsedData.data.results.length,
+            showing: parsedData.data.results.length > 10 ? 10 : parsedData.data.results.length,
             findings: parsedData.data.results.slice(0, 10).map(f => ({
+                id: f.id,
                 title: f.title,
                 severity: f.severity,
                 active: f.active,
+                description: f.description.substring(0, 200) + '...', // Truncate for brevity
+                mitigation: f.mitigation ? f.mitigation.substring(0, 200) + '...' : 'Not specified.',
             })),
         };
             
         return JSON.stringify(summary, null, 2);
-
     } catch (error) {
-        console.error('Error calling DefectDojo API:', error);
+        console.error('Error calling DefectDojo API for findings:', error);
         const errorMessage = error instanceof Error ? error.message : String(error);
         return JSON.stringify({ error: `An exception occurred while contacting DefectDojo. Details: ${errorMessage}` });
     }
+}
+
+/**
+ * Gets vulnerability counts by severity for a specific product or all products.
+ */
+export async function getVulnerabilityCountBySeverity(productName?: string) {
+    const severities = ['Critical', 'High', 'Medium', 'Low', 'Info'];
+    const counts: Record<string, number> = {};
+    let productIdQuery = '';
+
+    if (productName) {
+        // First, get product ID from name
+        const productData = await defectDojoFetch(`/api/v2/products/?name=${encodeURIComponent(productName)}`);
+        const parsedProducts = ProductListSchema.safeParse(productData);
+        if (!parsedProducts.success || parsedProducts.data.results.length === 0) {
+             throw new Error(`Product '${productName}' not found.`);
+        }
+        const productId = parsedProducts.data.results[0].id;
+        productIdQuery = `&product=${productId}`;
+    }
+
+    for (const severity of severities) {
+        const data = await defectDojoFetch(`/api/v2/findings/?severity=${severity}&active=true&limit=1${productIdQuery}`);
+        counts[severity] = FindingListSchema.parse(data).count;
+    }
+    return counts;
+}
+
+// For KPI Dashboard
+export async function getOpenVsClosedCounts() {
+    const openData = await defectDojoFetch(`/api/v2/findings/?active=true&limit=1`);
+    const closedData = await defectDojoFetch(`/api/v2/findings/?active=false&limit=1`);
+    return {
+        open: FindingListSchema.parse(openData).count,
+        closed: FindingListSchema.parse(closedData).count,
+    };
+}
+
+export async function getTopVulnerableProducts() {
+    const data = await defectDojoFetch('/api/v2/findings/?active=true&limit=1000&prefetch=product');
+    const parsedData = FindingListSchema.safeParse(data);
+    if (!parsedData.success) {
+        throw new Error('Failed to parse top products data from DefectDojo.');
+    }
+
+    const counts: Record<string, number> = {};
+    for (const finding of parsedData.data.results) {
+        if (finding.product) {
+            counts[finding.product.name] = (counts[finding.product.name] || 0) + 1;
+        }
+    }
+
+    return Object.entries(counts)
+        .sort(([, a], [, b]) => b - a)
+        .slice(0, 5)
+        .map(([product, vulnerabilities]) => ({ product, vulnerabilities }));
 }
