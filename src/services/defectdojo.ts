@@ -11,20 +11,9 @@ const ProductSchema = z.object({
     name: z.string(),
 });
 
-const ProductListSchema = z.object({
-    count: z.number(),
-    next: z.string().nullable(),
-    results: z.array(ProductSchema),
-});
-
 const EngagementSchema = z.object({
     id: z.number(),
     name: z.string(),
-});
-
-const EngagementListSchema = z.object({
-    count: z.number(),
-    results: z.array(EngagementSchema),
 });
 
 
@@ -39,6 +28,13 @@ const FindingSchema = z.object({
         id: z.number(),
         name: z.string(),
     }).optional(), // For prefetched data
+    cwe: z.number().nullable(),
+    cve: z.string().nullable(),
+    test: z.object({
+        test_type: z.object({
+            name: z.string()
+        })
+    }).optional(),
 });
 
 const FindingListSchema = z.object({
@@ -140,6 +136,7 @@ interface GetFindingsParams {
     severity?: string;
     active?: boolean;
     limit?: number;
+    toolName?: string;
 }
 /**
  * Fetches findings from DefectDojo and returns a detailed summary.
@@ -158,6 +155,9 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
         if (params.limit) {
             queryParts.push(`limit=${params.limit}`);
         }
+        if (params.toolName) {
+            queryParts.push(`test__test_type__name=${params.toolName}`);
+        }
 
         if (!params.productName) {
             return JSON.stringify({ error: `A product name must be specified to get findings.` });
@@ -169,6 +169,9 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
         }
         queryParts.push(`test__engagement__product=${productId}`);
        
+        // Prefetch related data to get tool name and product info
+        queryParts.push('prefetch=product', 'prefetch=test__test_type');
+
         const queryParams = queryParts.join('&');
         const data = await defectDojoFetch(`findings/?${queryParams}`);
         const parsedData = FindingListSchema.safeParse(data);
@@ -179,7 +182,8 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
         }
 
         if (parsedData.data.results.length === 0) {
-            return JSON.stringify({ message: `No active ${params.severity || ''} vulnerabilities were found for the product "${params.productName}".` });
+             const message = `No active ${params.severity || ''} vulnerabilities were found for the product "${params.productName}" ${params.toolName ? `from the tool "${params.toolName}"` : ''}.`;
+            return JSON.stringify({ message });
         }
         
         const summary = {
@@ -189,8 +193,10 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
             findings: parsedData.data.results.map(f => ({
                 id: f.id,
                 title: f.title,
+                cve: f.cve || 'N/A',
+                cwe: f.cwe ? `CWE-${f.cwe}` : 'Unknown',
                 severity: f.severity,
-                active: f.active,
+                tool: f.test?.test_type?.name || 'Unknown',
                 description: f.description,
                 mitigation: f.mitigation || 'Not specified.',
             })),
@@ -230,11 +236,11 @@ export async function getVulnerabilityCountBySeverity(productName?: string) {
     if (productId === null) {
         return { error: `Product '${productName}' not found.` };
     }
-    const productFilter = `&test__engagement__product=${productId}`;
+    const productFilter = `&test__engagement__product=${productId}&duplicate=false`;
 
     // Use Promise.all to fetch counts in parallel for better performance
     const countPromises = severities.map(async (severity) => {
-        const data = await defectDojoFetch(`findings/?severity=${severity}&active=true&limit=1&duplicate=false${productFilter}`);
+        const data = await defectDojoFetch(`findings/?severity=${severity}&active=true&limit=1${productFilter}`);
         const parsedData = FindingListSchema.parse(data);
         return { severity, count: parsedData.count };
     });
