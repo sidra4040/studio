@@ -13,6 +13,7 @@ const ProductSchema = z.object({
 
 const ProductListSchema = z.object({
     count: z.number(),
+    next: z.string().nullable(),
     results: z.array(ProductSchema),
 });
 
@@ -42,6 +43,7 @@ const FindingSchema = z.object({
 
 const FindingListSchema = z.object({
     count: z.number(),
+    next: z.string().nullable(),
     results: z.array(FindingSchema),
 });
 
@@ -51,8 +53,7 @@ async function defectDojoFetch(endpoint: string, options: RequestInit = {}) {
         throw new Error('DefectDojo API URL or Key is not configured.');
     }
 
-    // Ensure the URL is correctly formed, avoiding double slashes.
-    const url = `${API_URL.replace(/\/$/, '')}/api/v2/${endpoint.replace(/^\//, '')}`;
+    const url = endpoint.startsWith('http') ? endpoint : `${API_URL.replace(/\/$/, '')}/api/v2/${endpoint.replace(/^\//, '')}`;
     console.log(`Querying DefectDojo: ${url}`);
 
     const response = await fetch(url, {
@@ -74,19 +75,33 @@ async function defectDojoFetch(endpoint: string, options: RequestInit = {}) {
 }
 
 /**
+ * Fetches all results from a paginated DefectDojo endpoint.
+ * @param endpoint The initial endpoint to query.
+ * @returns A flattened array of all results.
+ */
+async function defectDojoFetchAll<T>(endpoint: string): Promise<T[]> {
+    let results: T[] = [];
+    let nextUrl: string | null = endpoint;
+
+    while (nextUrl) {
+        const data = await defectDojoFetch(nextUrl);
+        results = results.concat(data.results);
+        nextUrl = data.next;
+    }
+
+    return results;
+}
+
+
+/**
  * Finds a product by name (case-insensitive) and returns its ID.
  * @param productName The name of the product to find.
  * @returns The product ID, or null if not found.
  */
 async function getProductIDByName(productName: string): Promise<number | null> {
     try {
-        const data = await defectDojoFetch('products/?limit=2000');
-        const parsedData = ProductListSchema.safeParse(data);
-        if (!parsedData.success) {
-            console.error('Failed to parse product list from DefectDojo for ID lookup.');
-            return null;
-        }
-        const product = parsedData.data.results.find(p => p.name.trim().toLowerCase() === productName.trim().toLowerCase());
+        const products = await defectDojoFetchAll<z.infer<typeof ProductSchema>>('products/?limit=1000');
+        const product = products.find(p => p.name.trim().toLowerCase() === productName.trim().toLowerCase());
         return product ? product.id : null;
     } catch (error) {
         console.error(`Error fetching product ID for "${productName}":`, error);
@@ -100,12 +115,8 @@ async function getProductIDByName(productName: string): Promise<number | null> {
  */
 export async function getProductList() {
     try {
-        const data = await defectDojoFetch('products/?limit=1000'); // Assume max 1000 products
-        const parsedData = ProductListSchema.safeParse(data);
-        if (!parsedData.success) {
-            throw new Error('Failed to parse product list from DefectDojo.');
-        }
-        return parsedData.data.results.map(p => p.name);
+        const products = await defectDojoFetchAll<z.infer<typeof ProductSchema>>('products/?limit=1000');
+        return products.map(p => p.name);
     } catch (error) {
         return { error: error instanceof Error ? error.message : String(error) };
     }
@@ -116,12 +127,8 @@ export async function getProductList() {
  */
 export async function getEngagementList() {
     try {
-        const data = await defectDojoFetch('engagements/?limit=1000');
-        const parsedData = EngagementListSchema.safeParse(data);
-        if (!parsedData.success) {
-            throw new Error('Failed to parse engagement list from DefectDojo.');
-        }
-        return parsedData.data.results.map(e => e.name);
+        const engagements = await defectDojoFetchAll<z.infer<typeof EngagementSchema>>('engagements/?limit=1000');
+        return engagements.map(e => e.name);
     } catch (error) {
         return { error: error instanceof Error ? error.message : String(error) };
     }
@@ -136,12 +143,11 @@ interface GetFindingsParams {
 }
 /**
  * Fetches findings from DefectDojo and returns a detailed summary.
- * @param params - The structured parameters for the API request.
- * @returns A JSON string summary of the findings for the LLM to process.
+ * Correctly filters by product using test__engagement__product.
  */
 export async function getFindings(params: GetFindingsParams): Promise<string> {
     try {
-        const queryParts: string[] = [];
+        const queryParts: string[] = [`duplicate=false`];
         
         if (params.active !== undefined) {
             queryParts.push(`active=${params.active}`);
@@ -153,14 +159,16 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
             queryParts.push(`limit=${params.limit}`);
         }
 
-        if (params.productName) {
-            const productId = await getProductIDByName(params.productName);
-            if (productId === null) {
-                return JSON.stringify({ error: `Product with name '${params.productName}' not found.` });
-            }
-            queryParts.push(`product=${productId}`);
+        if (!params.productName) {
+            return JSON.stringify({ error: `A product name must be specified to get findings.` });
         }
 
+        const productId = await getProductIDByName(params.productName);
+        if (productId === null) {
+            return JSON.stringify({ message: `Product with name '${params.productName}' not found.` });
+        }
+        queryParts.push(`test__engagement__product=${productId}`);
+       
         const queryParams = queryParts.join('&');
         const data = await defectDojoFetch(`findings/?${queryParams}`);
         const parsedData = FindingListSchema.safeParse(data);
@@ -171,12 +179,13 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
         }
 
         if (parsedData.data.results.length === 0) {
-            return JSON.stringify({ message: `No findings found for product '${params.productName}' with the specified query.` });
+            return JSON.stringify({ message: `No active ${params.severity || ''} vulnerabilities were found for the product "${params.productName}".` });
         }
         
         const summary = {
             totalCount: parsedData.data.count,
             showing: parsedData.data.results.length,
+            productName: params.productName,
             findings: parsedData.data.results.map(f => ({
                 id: f.id,
                 title: f.title,
@@ -197,23 +206,35 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
 
 /**
  * Gets vulnerability counts by severity for a specific product or all products.
+ * Correctly filters by product using test__engagement__product.
  */
 export async function getVulnerabilityCountBySeverity(productName?: string) {
     const severities = ['Critical', 'High', 'Medium', 'Low', 'Info'];
     const counts: Record<string, number> = {};
-    let productFilter = '';
 
-    if (productName) {
-        const productId = await getProductIDByName(productName);
-        if (productId === null) {
-            return { error: `Product '${productName}' not found.` };
-        }
-        productFilter = `&product=${productId}`;
+    if (!productName) {
+        // If no product is specified, get overall counts
+        const allCounts = await getProductVulnerabilitySummary();
+        const totalCounts: Record<string, number> = { Critical: 0, High: 0, Medium: 0, Low: 0, Info: 0 };
+        Object.values(allCounts).forEach(product => {
+            totalCounts.Critical += product.Critical;
+            totalCounts.High += product.High;
+            totalCounts.Medium += product.Medium;
+            totalCounts.Low += product.Low;
+            totalCounts.Info += product.Info;
+        });
+        return totalCounts;
     }
+
+    const productId = await getProductIDByName(productName);
+    if (productId === null) {
+        return { error: `Product '${productName}' not found.` };
+    }
+    const productFilter = `&test__engagement__product=${productId}`;
 
     // Use Promise.all to fetch counts in parallel for better performance
     const countPromises = severities.map(async (severity) => {
-        const data = await defectDojoFetch(`findings/?severity=${severity}&active=true&limit=1${productFilter}`);
+        const data = await defectDojoFetch(`findings/?severity=${severity}&active=true&limit=1&duplicate=false${productFilter}`);
         const parsedData = FindingListSchema.parse(data);
         return { severity, count: parsedData.count };
     });
@@ -225,19 +246,15 @@ export async function getVulnerabilityCountBySeverity(productName?: string) {
         counts[result.severity] = result.count;
         total += result.count;
     }
+    counts['Total'] = total;
     
-    // Also include total count for the product
-    if (productName) {
-        counts['Total'] = total;
-    }
-
     return counts;
 }
 
 // For KPI Dashboard & Aggregate Queries
 export async function getOpenVsClosedCounts() {
-    const openData = await defectDojoFetch(`findings/?active=true&limit=1`);
-    const closedData = await defectDojoFetch(`findings/?active=false&limit=1`);
+    const openData = await defectDojoFetch(`findings/?active=true&limit=1&duplicate=false`);
+    const closedData = await defectDojoFetch(`findings/?active=false&limit=1&duplicate=false`);
     return {
         open: FindingListSchema.parse(openData).count,
         closed: FindingListSchema.parse(closedData).count,
@@ -245,18 +262,14 @@ export async function getOpenVsClosedCounts() {
 }
 
 export async function getProductVulnerabilitySummary() {
-    // Fetches all active findings and aggregates counts by product.
-    // This is more efficient than one call per product.
-    // Increased limit to get more findings for a better summary.
-    const data = await defectDojoFetch('findings/?active=true&limit=2000&prefetch=product');
-    const parsedData = FindingListSchema.safeParse(data);
-    if (!parsedData.success) {
-        throw new Error('Failed to parse vulnerability summary data from DefectDojo.');
-    }
+    // Fetches all active findings using pagination and aggregates counts by product.
+    const allFindings = await defectDojoFetchAll<z.infer<typeof FindingSchema>>(
+        'findings/?active=true&duplicate=false&limit=1000&prefetch=product'
+    );
 
     const summary: Record<string, { Critical: number, High: number, Medium: number, Low: number, Info: number, Total: number }> = {};
 
-    for (const finding of parsedData.data.results) {
+    for (const finding of allFindings) {
         if (finding.product) {
             const productName = finding.product.name;
             if (!summary[productName]) {
@@ -275,7 +288,7 @@ export async function getProductVulnerabilitySummary() {
 
 export async function getTotalFindingCount() {
     try {
-        const data = await defectDojoFetch('findings/?limit=1');
+        const data = await defectDojoFetch('findings/?limit=1&duplicate=false');
         return { count: FindingListSchema.parse(data).count };
     } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
