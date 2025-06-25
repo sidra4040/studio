@@ -22,15 +22,15 @@ const FindingSchema = z.object({
     title: z.string(),
     severity: z.string(),
     description: z.string(),
-    mitigation: z.string().nullable(),
+    mitigation: z.string().nullable().optional(),
     active: z.boolean(),
     product: z.object({
         id: z.number(),
         name: z.string(),
     }).optional(), // For prefetched data
     cwe: z.number().nullable(),
-    cve: z.string().nullable(),
-    test: z.any().optional(), // Can be a number (ID) or a prefetched object. `any` is safest.
+    cve: z.string().nullable().optional(),
+    test: z.any().optional(),
 });
 
 const FindingListSchema = z.object({
