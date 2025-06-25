@@ -30,11 +30,7 @@ const FindingSchema = z.object({
     }).optional(), // For prefetched data
     cwe: z.number().nullable(),
     cve: z.string().nullable(),
-    test: z.object({
-        test_type: z.object({
-            name: z.string()
-        })
-    }).optional(),
+    test: z.any().optional(), // Can be a number (ID) or a prefetched object. `any` is safest.
 });
 
 const FindingListSchema = z.object({
@@ -196,7 +192,7 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
                 cve: f.cve || 'N/A',
                 cwe: f.cwe ? `CWE-${f.cwe}` : 'Unknown',
                 severity: f.severity,
-                tool: f.test?.test_type?.name || 'Unknown',
+                tool: (f.test && typeof f.test === 'object' && !Array.isArray(f.test) && f.test.test_type?.name) || 'Unknown',
                 description: f.description,
                 mitigation: f.mitigation || 'Not specified.',
             })),
