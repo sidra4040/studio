@@ -36,10 +36,14 @@ Before you begin, ensure you have the following installed on your system:
 
     b. Open the `.env` file and fill in the required values:
 
-    -   `GOOGLE_API_KEY`: Your API key for Google AI. You can get one from [Google AI Studio](https://aistudio.google.com/app/apikey). This is used for the core GenAI features.
+    -   `GOOGLE_API_KEY`: Your API key for Google AI. You can get one from [Google AI Studio](https://aistudio.google.com/app/apikey).
     -   `DEFECTDOJO_API_URL`: The URL of your DefectDojo instance.
-    -   `DEFECTDOJO_API_KEY`: Your API v2 key from DefectDojo. You can generate this from your DefectDojo profile page.
-    -   `MEDTRONIC_GPT_*`: Credentials for the custom Medtronic GPT API. Fill these in if you have access and intend to use this tool.
+    -   `DEFECTDOJO_API_KEY`: Your API v2 key from DefectDojo.
+    -   `MEDTRONIC_GPT_API_URL`: The base URL for the Medtronic GPT API.
+    -   `MEDTRONIC_GPT_SUBSCRIPTION_KEY`: Your subscription key for the Medtronic service.
+    -   `MEDTRONIC_GPT_API_TOKEN`: Your initial, short-lived API token. This will be refreshed automatically.
+    -   `MEDTRONIC_GPT_REFRESH_URL`: The URL for refreshing the API token (this is pre-filled with the correct value).
+    -   `MEDTRONIC_GPT_REFRESH_TOKEN`: Your long-lived refresh token used to get new API tokens.
 
 4.  **Run the Application**
 
