@@ -16,6 +16,17 @@ const ProductListSchema = z.object({
     results: z.array(ProductSchema),
 });
 
+const EngagementSchema = z.object({
+    id: z.number(),
+    name: z.string(),
+});
+
+const EngagementListSchema = z.object({
+    count: z.number(),
+    results: z.array(EngagementSchema),
+});
+
+
 const FindingSchema = z.object({
     id: z.number(),
     title: z.string(),
@@ -78,12 +89,57 @@ export async function getProductList() {
 }
 
 /**
+ * Gets a list of all engagements from DefectDojo.
+ */
+export async function getEngagementList() {
+    try {
+        const data = await defectDojoFetch('/api/v2/engagements/?limit=1000');
+        const parsedData = EngagementListSchema.safeParse(data);
+        if (!parsedData.success) {
+            throw new Error('Failed to parse engagement list from DefectDojo.');
+        }
+        return parsedData.data.results.map(e => e.name);
+    } catch (error) {
+        return { error: error instanceof Error ? error.message : String(error) };
+    }
+}
+
+
+interface GetFindingsParams {
+    productName?: string;
+    severity?: string;
+    active?: boolean;
+    limit?: number;
+}
+/**
  * Fetches findings from DefectDojo and returns a detailed summary.
- * @param queryParams - The query string for the API request (e.g., 'severity=Critical').
+ * @param params - The structured parameters for the API request.
  * @returns A JSON string summary of the findings for the LLM to process.
  */
-export async function getFindings(queryParams: string): Promise<string> {
+export async function getFindings(params: GetFindingsParams): Promise<string> {
     try {
+        let queryParts: string[] = [];
+        if (params.active !== undefined) {
+            queryParts.push(`active=${params.active}`);
+        }
+        if (params.severity) {
+            queryParts.push(`severity=${params.severity}`);
+        }
+        if (params.limit) {
+            queryParts.push(`limit=${params.limit}`);
+        }
+
+        if (params.productName) {
+            const productData = await defectDojoFetch(`/api/v2/products/?name=${encodeURIComponent(params.productName)}`);
+            const parsedProducts = ProductListSchema.safeParse(productData);
+            if (!parsedProducts.success || parsedProducts.data.results.length === 0) {
+                 return JSON.stringify({ message: `Product '${params.productName}' not found.` });
+            }
+            const productId = parsedProducts.data.results[0].id;
+            queryParts.push(`product=${productId}`);
+        }
+
+        const queryParams = queryParts.join('&');
         const data = await defectDojoFetch(`/api/v2/findings/?${queryParams}`);
         const parsedData = FindingListSchema.safeParse(data);
 
@@ -96,17 +152,17 @@ export async function getFindings(queryParams: string): Promise<string> {
             return JSON.stringify({ message: 'No findings found for the specified query.' });
         }
         
-        // Return a detailed summary for the LLM to process. Limit to top 10 for brevity.
+        // Return a detailed summary for the LLM to process.
         const summary = {
             totalCount: parsedData.data.count,
-            showing: parsedData.data.results.length > 10 ? 10 : parsedData.data.results.length,
-            findings: parsedData.data.results.slice(0, 10).map(f => ({
+            showing: parsedData.data.results.length,
+            findings: parsedData.data.results.map(f => ({
                 id: f.id,
                 title: f.title,
                 severity: f.severity,
                 active: f.active,
-                description: f.description.substring(0, 200) + '...', // Truncate for brevity
-                mitigation: f.mitigation ? f.mitigation.substring(0, 200) + '...' : 'Not specified.',
+                description: f.description,
+                mitigation: f.mitigation || 'Not specified.',
             })),
         };
             
