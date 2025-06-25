@@ -10,7 +10,7 @@ import { z } from 'genkit';
 import { 
     getVulnerabilityCountBySeverity,
     getOpenVsClosedCounts,
-    getTopVulnerableProducts
+    getProductVulnerabilitySummary
 } from '@/services/defectdojo';
 
 const KpiDataSchema = z.object({
@@ -35,11 +35,20 @@ export async function getKpiData(): Promise<KpiData> {
     try {
         console.log("Fetching live KPI data from DefectDojo...");
         // Fetch all data in parallel
-        const [severityCounts, openClosedCounts, topProducts] = await Promise.all([
+        const [severityCounts, openClosedCounts, productSummary] = await Promise.all([
             getVulnerabilityCountBySeverity(),
             getOpenVsClosedCounts(),
-            getTopVulnerableProducts()
+            getProductVulnerabilitySummary()
         ]);
+
+        // Calculate top 5 vulnerable products from the summary
+        const productTotals = Object.entries(productSummary).map(([product, counts]) => ({
+            product,
+            vulnerabilities: counts.Total || 0,
+        }));
+        productTotals.sort((a, b) => b.vulnerabilities - a.vulnerabilities);
+        const topProducts = productTotals.slice(0, 5);
+
 
         const kpiData: KpiData = {
             vulnerabilitiesBySeverity: Object.entries(severityCounts).map(([severity, count]) => ({

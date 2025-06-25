@@ -51,7 +51,8 @@ async function defectDojoFetch(endpoint: string, options: RequestInit = {}) {
         throw new Error('DefectDojo API URL or Key is not configured.');
     }
 
-    const url = `${API_URL}${endpoint}`;
+    // Ensure the URL is correctly formed, avoiding double slashes.
+    const url = `${API_URL.replace(/\/$/, '')}/${endpoint.replace(/^\//, '')}`;
     console.log(`Querying DefectDojo: ${url}`);
 
     const response = await fetch(url, {
@@ -145,7 +146,7 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
         }
 
         if (parsedData.data.results.length === 0) {
-            return JSON.stringify({ message: 'No findings found for the specified query.' });
+            return JSON.stringify({ message: `No findings found for product '${params.productName}' with the specified query.` });
         }
         
         // Return a detailed summary for the LLM to process.
@@ -190,7 +191,7 @@ export async function getVulnerabilityCountBySeverity(productName?: string) {
     return counts;
 }
 
-// For KPI Dashboard
+// For KPI Dashboard & Aggregate Queries
 export async function getOpenVsClosedCounts() {
     const openData = await defectDojoFetch(`/api/v2/findings/?active=true&limit=1`);
     const closedData = await defectDojoFetch(`/api/v2/findings/?active=false&limit=1`);
@@ -200,22 +201,41 @@ export async function getOpenVsClosedCounts() {
     };
 }
 
-export async function getTopVulnerableProducts() {
-    const data = await defectDojoFetch('/api/v2/findings/?active=true&limit=1000&prefetch=product');
+export async function getProductVulnerabilitySummary() {
+    // Fetches all active findings and aggregates counts by product.
+    // This is more efficient than one call per product.
+    // Increased limit to get more findings for a better summary.
+    const data = await defectDojoFetch('/api/v2/findings/?active=true&limit=2000&prefetch=product');
     const parsedData = FindingListSchema.safeParse(data);
     if (!parsedData.success) {
-        throw new Error('Failed to parse top products data from DefectDojo.');
+        throw new Error('Failed to parse vulnerability summary data from DefectDojo.');
     }
 
-    const counts: Record<string, number> = {};
+    const summary: Record<string, { Critical: number, High: number, Medium: number, Low: number, Info: number, Total: number }> = {};
+
     for (const finding of parsedData.data.results) {
         if (finding.product) {
-            counts[finding.product.name] = (counts[finding.product.name] || 0) + 1;
+            const productName = finding.product.name;
+            if (!summary[productName]) {
+                summary[productName] = { Critical: 0, High: 0, Medium: 0, Low: 0, Info: 0, Total: 0 };
+            }
+            const severity = finding.severity as keyof typeof summary[string];
+            if (summary[productName][severity] !== undefined) {
+                summary[productName][severity]++;
+            }
+            summary[productName].Total++;
         }
     }
 
-    return Object.entries(counts)
-        .sort(([, a], [, b]) => b - a)
-        .slice(0, 5)
-        .map(([product, vulnerabilities]) => ({ product, vulnerabilities }));
+    return summary;
+}
+
+export async function getTotalFindingCount() {
+    try {
+        const data = await defectDojoFetch('/api/v2/findings/?limit=1');
+        return { count: FindingListSchema.parse(data).count };
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        return { error: `Failed to retrieve total finding count: ${errorMessage}` };
+    }
 }
