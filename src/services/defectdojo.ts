@@ -130,13 +130,9 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
         }
 
         if (params.productName) {
-            const productData = await defectDojoFetch(`/api/v2/products/?name=${encodeURIComponent(params.productName)}`);
-            const parsedProducts = ProductListSchema.safeParse(productData);
-            if (!parsedProducts.success || parsedProducts.data.results.length === 0) {
-                 return JSON.stringify({ message: `Product '${params.productName}' not found.` });
-            }
-            const productId = parsedProducts.data.results[0].id;
-            queryParts.push(`product=${productId}`);
+            // Filter directly by the product name using the Django REST Framework's double underscore for related fields.
+            // This is more efficient and reliable than fetching the product ID first.
+            queryParts.push(`product__name=${encodeURIComponent(params.productName)}`);
         }
 
         const queryParams = queryParts.join('&');
@@ -180,21 +176,15 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
 export async function getVulnerabilityCountBySeverity(productName?: string) {
     const severities = ['Critical', 'High', 'Medium', 'Low', 'Info'];
     const counts: Record<string, number> = {};
-    let productIdQuery = '';
+    let productQuery = '';
 
     if (productName) {
-        // First, get product ID from name
-        const productData = await defectDojoFetch(`/api/v2/products/?name=${encodeURIComponent(productName)}`);
-        const parsedProducts = ProductListSchema.safeParse(productData);
-        if (!parsedProducts.success || parsedProducts.data.results.length === 0) {
-             throw new Error(`Product '${productName}' not found.`);
-        }
-        const productId = parsedProducts.data.results[0].id;
-        productIdQuery = `&product=${productId}`;
+        // Filter directly by product name. This is more efficient and reliable.
+        productQuery = `&product__name=${encodeURIComponent(productName)}`;
     }
 
     for (const severity of severities) {
-        const data = await defectDojoFetch(`/api/v2/findings/?severity=${severity}&active=true&limit=1${productIdQuery}`);
+        const data = await defectDojoFetch(`/api/v2/findings/?severity=${severity}&active=true&limit=1${productQuery}`);
         counts[severity] = FindingListSchema.parse(data).count;
     }
     return counts;
