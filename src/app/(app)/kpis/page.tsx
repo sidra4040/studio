@@ -1,30 +1,11 @@
 'use client';
 
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis, Pie, PieChart, Cell, Legend, Tooltip as RechartsTooltip } from 'recharts';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { ChartContainer, ChartTooltipContent } from '@/components/ui/chart';
-
-const vulnerabilitiesBySeverityData = [
-  { severity: 'Critical', count: 15 },
-  { severity: 'High', count: 45 },
-  { severity: 'Medium', count: 120 },
-  { severity: 'Low', count: 250 },
-  { severity: 'Info', count: 300 },
-];
-
-const openVsClosedData = [
-    { name: 'Open', value: 180, fill: 'hsl(var(--destructive))' },
-    { name: 'Closed', value: 550, fill: 'hsl(var(--chart-2))' },
-];
-
-const topVulnerableProductsData = [
-    { product: 'Legacy API', vulnerabilities: 78 },
-    { product: 'Mobile App v2', vulnerabilities: 55 },
-    { product: 'Data Processor', vulnerabilities: 42 },
-    { product: 'WebApp Gateway', vulnerabilities: 31 },
-    { product: 'Internal Dashboard', vulnerabilities: 25 },
-];
+import { getKpiData, type KpiData } from '@/app/actions';
+import { Skeleton } from '@/components/ui/skeleton';
 
 const chartConfigBySeverity = {
     count: { label: 'Vulnerabilities' },
@@ -45,23 +26,80 @@ const chartConfigTopProducts = {
     vulnerabilities: { label: 'Vulnerabilities', color: 'hsl(var(--primary))' }
 }
 
+const KpiSkeleton = () => (
+    <div className="grid gap-6 sm:grid-cols-1 lg:grid-cols-2 xl:grid-cols-3">
+        <Card className="lg:col-span-2">
+            <CardHeader>
+                <Skeleton className="h-7 w-3/5" />
+                <Skeleton className="h-4 w-4/5" />
+            </CardHeader>
+            <CardContent>
+                <Skeleton className="h-[300px] w-full" />
+            </CardContent>
+        </Card>
+        <Card>
+            <CardHeader>
+                <Skeleton className="h-7 w-3/5" />
+                <Skeleton className="h-4 w-4/5" />
+            </CardHeader>
+            <CardContent>
+                <Skeleton className="h-[300px] w-full" />
+            </CardContent>
+        </Card>
+        <Card className="lg:col-span-3">
+            <CardHeader>
+                <Skeleton className="h-7 w-2/5" />
+                <Skeleton className="h-4 w-3/5" />
+            </CardHeader>
+            <CardContent>
+                <Skeleton className="h-[300px] w-full" />
+            </CardContent>
+        </Card>
+    </div>
+);
+
+
 export default function KpiPage() {
+    const [kpiData, setKpiData] = useState<KpiData | null>(null);
+    const [isLoading, setIsLoading] = useState(true);
+
+    useEffect(() => {
+        const fetchData = async () => {
+            setIsLoading(true);
+            try {
+                const data = await getKpiData();
+                setKpiData(data);
+            } catch (error) {
+                console.error("Failed to fetch KPI data", error);
+                // Optionally, set an error state here to show a message
+            } finally {
+                setIsLoading(false);
+            }
+        };
+
+        fetchData();
+    }, []);
+
+    if (isLoading || !kpiData) {
+        return <KpiSkeleton />;
+    }
+
   return (
     <div className="grid gap-6 sm:grid-cols-1 lg:grid-cols-2 xl:grid-cols-3">
-      <Card className="lg:col-span-2">
+      <Card className="lg:col-span-2 animate-in fade-in slide-in-from-bottom-4" style={{animationDelay: '100ms', animationFillMode: 'backwards'}}>
         <CardHeader>
           <CardTitle>Vulnerabilities by Severity</CardTitle>
           <CardDescription>A breakdown of all findings by severity level.</CardDescription>
         </CardHeader>
         <CardContent>
           <ChartContainer config={chartConfigBySeverity} className="h-[300px] w-full">
-            <BarChart data={vulnerabilitiesBySeverityData} accessibilityLayer>
+            <BarChart data={kpiData.vulnerabilitiesBySeverity} accessibilityLayer>
               <CartesianGrid vertical={false} />
               <XAxis dataKey="severity" tickLine={false} tickMargin={10} axisLine={false} />
               <YAxis />
               <RechartsTooltip cursor={false} content={<ChartTooltipContent indicator="dot" />} />
               <Bar dataKey="count" radius={4}>
-                {vulnerabilitiesBySeverityData.map((entry) => (
+                {kpiData.vulnerabilitiesBySeverity.map((entry) => (
                     <Cell key={`cell-${entry.severity}`} fill={chartConfigBySeverity[entry.severity as keyof typeof chartConfigBySeverity]?.color} />
                 ))}
               </Bar>
@@ -70,7 +108,7 @@ export default function KpiPage() {
         </CardContent>
       </Card>
       
-      <Card>
+      <Card className="animate-in fade-in slide-in-from-bottom-4" style={{animationDelay: '200ms', animationFillMode: 'backwards'}}>
         <CardHeader>
           <CardTitle>Open vs. Closed Findings</CardTitle>
           <CardDescription>The ratio of open to closed vulnerabilities.</CardDescription>
@@ -80,7 +118,7 @@ export default function KpiPage() {
             <PieChart accessibilityLayer>
               <RechartsTooltip cursor={false} content={<ChartTooltipContent hideLabel />} />
               <Pie
-                data={openVsClosedData}
+                data={kpiData.openVsClosed}
                 dataKey="value"
                 nameKey="name"
                 innerRadius={60}
@@ -104,14 +142,14 @@ export default function KpiPage() {
         </CardContent>
       </Card>
 
-      <Card className="lg:col-span-3">
+      <Card className="lg:col-span-3 animate-in fade-in slide-in-from-bottom-4" style={{animationDelay: '300ms', animationFillMode: 'backwards'}}>
         <CardHeader>
           <CardTitle>Top 5 Vulnerable Products</CardTitle>
           <CardDescription>Products with the highest number of open vulnerabilities.</CardDescription>
         </CardHeader>
         <CardContent>
           <ChartContainer config={chartConfigTopProducts} className="h-[300px] w-full">
-            <BarChart data={topVulnerableProductsData} layout="vertical" accessibilityLayer>
+            <BarChart data={kpiData.topVulnerableProducts} layout="vertical" accessibilityLayer>
                 <CartesianGrid horizontal={false} />
                 <YAxis dataKey="product" type="category" tickLine={false} axisLine={false} tickMargin={10} width={120} />
                 <XAxis type="number" dataKey="vulnerabilities" hide />

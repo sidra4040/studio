@@ -48,7 +48,7 @@ const AppLayout = ({ children }: { children: React.ReactNode }) => {
 
   return (
     <SidebarProvider>
-      <Sidebar collapsible="icon" className="border-r">
+      <Sidebar collapsible="icon" className="border-r bg-card">
         <SidebarHeader className="h-16 flex items-center justify-center p-2">
            <div className="flex items-center gap-2">
             <Button variant="ghost" size="icon" className="h-10 w-10 text-primary" asChild>
@@ -83,7 +83,7 @@ const AppLayout = ({ children }: { children: React.ReactNode }) => {
           <Separator className="my-2" />
           <div className="flex items-center gap-3 p-2 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:p-0 group-data-[collapsible=icon]:py-2">
             <Avatar className="h-9 w-9">
-              <AvatarImage src="https://placehold.co/100x100.png" alt="@user" />
+              <AvatarImage src="https://placehold.co/100x100.png" alt="@user" data-ai-hint="man" />
               <AvatarFallback>U</AvatarFallback>
             </Avatar>
             <div className="flex flex-col group-data-[collapsible=icon]:hidden">
@@ -101,7 +101,9 @@ const AppLayout = ({ children }: { children: React.ReactNode }) => {
             <span className="sr-only">Settings</span>
           </Button>
         </header>
-        <main className="flex-1 p-4 md:p-6">{children}</main>
+        <main className="flex-1 p-4 md:p-6 animate-fade-in">
+            {children}
+        </main>
       </SidebarInset>
     </SidebarProvider>
   );

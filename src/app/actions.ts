@@ -10,6 +10,10 @@ import {
   type GenerateDefectDojoQueriesInput,
   type GenerateDefectDojoQueriesOutput,
 } from "@/ai/flows/generate-defectdojo-queries";
+import {
+    getKpiData as getKpiDataFlow,
+    type KpiData,
+} from "@/ai/flows/get-kpi-data";
 
 export async function answerVulnerabilityQuestions(
   input: AnswerVulnerabilityQuestionsInput
@@ -21,4 +25,8 @@ export async function generateDefectDojoQueries(
   input: GenerateDefectDojoQueriesInput
 ): Promise<GenerateDefectDojoQueriesOutput> {
   return await generateDefectDojoQueriesFlow(input);
+}
+
+export async function getKpiData(): Promise<KpiData> {
+    return await getKpiDataFlow();
 }

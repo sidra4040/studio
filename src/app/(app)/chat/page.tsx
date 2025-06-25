@@ -83,15 +83,19 @@ export default function ChatPage() {
       <ScrollArea className="flex-1" ref={scrollAreaRef}>
         <div className="p-4 sm:p-6 space-y-6">
           {messages.length === 0 && !isLoading && (
-            <div className="flex flex-col items-center justify-center h-full text-center pt-16">
+            <div className="flex flex-col items-center justify-center h-full text-center pt-16 animate-fade-in">
               <BotMessageSquare className="h-16 w-16 text-primary mb-4" />
               <h2 className="text-2xl font-semibold">Welcome to DojoGPT</h2>
               <p className="text-muted-foreground max-w-md mx-auto">
                 Ask me anything about your vulnerabilities in DefectDojo. I can help you find, analyze, and manage security findings.
               </p>
               <div className="mt-8 grid grid-cols-1 sm:grid-cols-2 gap-4 w-full max-w-lg">
-                {suggestions.map((s) => (
-                    <Card key={s} className="hover:bg-accent cursor-pointer" onClick={() => handleSendMessage(s)}>
+                {suggestions.map((s, i) => (
+                    <Card 
+                      key={s} 
+                      className="hover:bg-accent cursor-pointer animate-slide-in-from-bottom"
+                      style={{ animationDelay: `${i * 100}ms`, animationFillMode: 'backwards' }}
+                      onClick={() => handleSendMessage(s)}>
                         <CardContent className="p-4">
                             <p className="text-sm font-medium text-center">{s}</p>
                         </CardContent>
@@ -104,7 +108,7 @@ export default function ChatPage() {
             <div
               key={message.id}
               className={cn(
-                'flex items-start gap-4',
+                'flex items-start gap-4 animate-in fade-in slide-in-from-bottom-4',
                 message.role === 'user' ? 'justify-end' : 'justify-start'
               )}
             >
@@ -149,7 +153,7 @@ export default function ChatPage() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder="Ask about vulnerabilities, products, or findings..."
-            className="pr-20 resize-none"
+            className="pr-20 resize-none bg-secondary/50"
             rows={1}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
