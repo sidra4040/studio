@@ -1,3 +1,4 @@
+
 'use server';
 
 import { z } from 'zod';
@@ -132,6 +133,18 @@ export async function getEngagementList() {
     }
 }
 
+/**
+ * Gets a list of all tools (test types) from DefectDojo.
+ */
+export async function getToolList() {
+    try {
+        const testTypes = await defectDojoFetchAll<z.infer<typeof TestTypeSchema>>('test_types/?limit=1000');
+        return testTypes.map(t => t.name);
+    } catch (error) {
+        return { error: error instanceof Error ? error.message : String(error) };
+    }
+}
+
 interface GetFindingsParams {
     productName?: string;
     severity?: string;
@@ -167,7 +180,8 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
        
         if (params.toolName) {
             const allTestTypes = await defectDojoFetchAll<z.infer<typeof TestTypeSchema>>('test_types/?limit=1000');
-            const tool = allTestTypes.find(t => t.name.toLowerCase() === params.toolName!.toLowerCase());
+            // Use .includes() for a more flexible, case-insensitive match
+            const tool = allTestTypes.find(t => t.name.toLowerCase().includes(params.toolName!.toLowerCase()));
 
             if (!tool) {
                  return JSON.stringify({ message: `Tool with name '${params.toolName}' was not found in DefectDojo.` });
@@ -259,11 +273,9 @@ export async function getVulnerabilityCountBySeverity(productName: string) {
 export async function getOpenVsClosedCounts() {
     // This function fetches only the count of findings, which is much more efficient.
     try {
-        const openDataPromise = defectDojoFetch(`findings/?active=true&duplicate=false&limit=1`);
-        const closedDataPromise = defectDojoFetch(`findings/?active=false&duplicate=false&limit=1`);
+        const openData = await defectDojoFetch(`findings/?active=true&duplicate=false&limit=1`);
+        const closedData = await defectDojoFetch(`findings/?active=false&duplicate=false&limit=1`);
         
-        const [openData, closedData] = await Promise.all([openDataPromise, closedDataPromise]);
-
         return {
             open: FindingCountSchema.parse(openData).count,
             closed: FindingCountSchema.parse(closedData).count,
