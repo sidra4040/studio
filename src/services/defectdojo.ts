@@ -39,6 +39,10 @@ const FindingSchema = z.object({
     test: z.any().optional(),
 });
 
+const FindingCountSchema = z.object({
+    count: z.number(),
+});
+
 const FindingListSchema = z.object({
     count: z.number(),
     next: z.string().nullable(),
@@ -108,23 +112,6 @@ async function getProductIDByName(productName: string): Promise<number | null> {
 }
 
 /**
- * Finds a test type (tool) by name (case-insensitive) and returns its ID.
- * @param toolName The name of the tool/scanner to find.
- * @returns The test type ID, or null if not found.
- */
-async function getTestTypeIDByName(toolName: string): Promise<number | null> {
-    try {
-        const testTypes = await defectDojoFetchAll<z.infer<typeof TestTypeSchema>>('test_types/?limit=1000');
-        const testType = testTypes.find(t => t.name.trim().toLowerCase() === toolName.trim().toLowerCase());
-        return testType ? testType.id : null;
-    } catch (error) {
-        console.error(`Error fetching test type ID for "${toolName}":`, error);
-        return null;
-    }
-}
-
-
-/**
  * Gets a list of all products from DefectDojo.
  */
 export async function getProductList() {
@@ -183,11 +170,8 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
         }
        
         if (params.toolName) {
-            const toolId = await getTestTypeIDByName(params.toolName);
-            if (toolId === null) {
-                return JSON.stringify({ message: `Tool with name '${params.toolName}' not found.` });
-            }
-            queryParts.push(`test__test_type=${toolId}`);
+             // Use __icontains for a case-insensitive search directly on the tool name
+            queryParts.push(`test__test_type__name__icontains=${encodeURIComponent(params.toolName)}`);
         }
 
         // Prefetch related data to get tool name and product info
@@ -267,19 +251,20 @@ export async function getVulnerabilityCountBySeverity(productName: string) {
 
 // For KPI Dashboard & Aggregate Queries
 export async function getOpenVsClosedCounts() {
-    // This function can be slow if there are many findings. We get the total count from each endpoint.
-    const openData = await defectDojoFetch(`findings/?active=true&limit=1&duplicate=false`);
-    const closedData = await defectDojoFetch(`findings/?active=false&limit=1&duplicate=false`);
+    // This function is now optimized to use the /counts endpoint.
+    const openData = await defectDojoFetch(`findings/counts/?active=true&duplicate=false`);
+    const closedData = await defectDojoFetch(`findings/counts/?active=false&duplicate=false`);
     return {
-        open: FindingListSchema.parse(openData).count,
-        closed: FindingListSchema.parse(closedData).count,
+        open: FindingCountSchema.parse(openData[0]).count,
+        closed: FindingCountSchema.parse(closedData[0]).count,
     };
 }
 
 
 export async function getProductVulnerabilitySummary() {
     // Fetches all active findings using pagination and aggregates counts by product.
-    // This is more efficient than querying for each product individually.
+    // This can be slow on instances with a very large number of findings.
+    console.log("Fetching full product vulnerability summary. This may be slow.")
     const allFindings = await defectDojoFetchAll<z.infer<typeof FindingSchema>>(
         'findings/?active=true&duplicate=false&limit=1000&prefetch=product'
     );
@@ -299,14 +284,14 @@ export async function getProductVulnerabilitySummary() {
             summary[productName].Total++;
         }
     }
-
+    console.log("Finished calculating product vulnerability summary.");
     return summary;
 }
 
 export async function getTotalFindingCount() {
     try {
-        const data = await defectDojoFetch('findings/?limit=1&duplicate=false');
-        return { count: FindingListSchema.parse(data).count };
+        const data = await defectDojoFetch('findings/counts/?duplicate=false');
+        return { count: FindingCountSchema.parse(data[0]).count };
     } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         return { error: `Failed to retrieve total finding count: ${errorMessage}` };

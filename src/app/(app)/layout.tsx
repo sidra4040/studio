@@ -6,6 +6,7 @@ import { usePathname } from 'next/navigation';
 import {
   BarChart3,
   BotMessageSquare,
+  FilePieChart,
   SearchCode,
   Settings,
 } from 'lucide-react';
@@ -43,6 +44,11 @@ const AppLayout = ({ children }: { children: React.ReactNode }) => {
       href: '/kpis',
       label: 'KPI Dashboard',
       icon: BarChart3,
+    },
+    {
+      href: '/analysis',
+      label: 'Product Analysis',
+      icon: FilePieChart,
     },
   ];
 
