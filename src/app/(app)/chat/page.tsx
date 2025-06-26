@@ -9,6 +9,8 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Card, CardContent } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 import { answerVulnerabilityQuestions } from '@/app/actions';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 type Message = {
   id: string;
@@ -125,7 +127,21 @@ export default function ChatPage() {
                     : 'bg-secondary'
                 )}
               >
-                <p className="whitespace-pre-wrap">{message.content}</p>
+                {message.role === 'user' ? (
+                  <p className="whitespace-pre-wrap">{message.content}</p>
+                ) : (
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    className="space-y-2"
+                    components={{
+                      p: ({node, ...props}) => <p className="leading-relaxed last:mb-0" {...props} />,
+                      ul: ({node, ...props}) => <ul className="space-y-1 list-disc list-outside ml-4" {...props} />,
+                      ol: ({node, ...props}) => <ol className="space-y-1 list-decimal list-outside ml-4" {...props} />,
+                      li: ({node, ...props}) => <li className="pl-1" {...props} />,
+                      strong: ({node, ...props}) => <strong className="font-semibold" {...props} />,
+                    }}
+                  >{message.content}</ReactMarkdown>
+                )}
               </div>
               {message.role === 'user' && (
                  <Avatar className="h-8 w-8 border">
