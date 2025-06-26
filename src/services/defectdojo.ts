@@ -153,15 +153,13 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
             queryParts.push(`limit=${params.limit}`);
         }
 
-        if (!params.productName) {
-            return JSON.stringify({ error: `A product name must be specified to get findings.` });
+        if (params.productName) {
+            const productId = await getProductIDByName(params.productName);
+            if (productId === null) {
+                return JSON.stringify({ message: `Product with name '${params.productName}' not found.` });
+            }
+            queryParts.push(`test__engagement__product=${productId}`);
         }
-
-        const productId = await getProductIDByName(params.productName);
-        if (productId === null) {
-            return JSON.stringify({ message: `Product with name '${params.productName}' not found.` });
-        }
-        queryParts.push(`test__engagement__product=${productId}`);
        
         if (params.toolName) {
             queryParts.push(`test__test_type__name=${params.toolName}`);
@@ -180,14 +178,14 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
         }
 
         if (parsedData.data.results.length === 0) {
-             const message = `No active ${params.severity || ''} vulnerabilities were found for the product "${params.productName}" ${params.toolName ? `from the tool "${params.toolName}"` : ''}.`;
+             const message = `No active ${params.severity || ''} vulnerabilities were found for the product "${params.productName || 'any product'}" ${params.toolName ? `from the tool "${params.toolName}"` : ''}.`;
             return JSON.stringify({ message });
         }
         
         const summary = {
             totalCount: parsedData.data.count,
             showing: parsedData.data.results.length,
-            productName: params.productName,
+            productName: params.productName || 'All Products',
             findings: parsedData.data.results.map(f => ({
                 id: f.id,
                 title: f.title,
@@ -210,27 +208,13 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
 }
 
 /**
- * Gets vulnerability counts by severity for a specific product or all products.
+ * Gets vulnerability counts by severity for a specific product.
  * Correctly filters by product using test__engagement__product.
  */
-export async function getVulnerabilityCountBySeverity(productName?: string) {
+export async function getVulnerabilityCountBySeverity(productName: string) {
     const severities = ['Critical', 'High', 'Medium', 'Low', 'Info'];
     const counts: Record<string, number> = {};
-
-    if (!productName) {
-        // If no product is specified, get overall counts
-        const allCounts = await getProductVulnerabilitySummary();
-        const totalCounts: Record<string, number> = { Critical: 0, High: 0, Medium: 0, Low: 0, Info: 0 };
-        Object.values(allCounts).forEach(product => {
-            totalCounts.Critical += product.Critical;
-            totalCounts.High += product.High;
-            totalCounts.Medium += product.Medium;
-            totalCounts.Low += product.Low;
-            totalCounts.Info += product.Info;
-        });
-        return totalCounts;
-    }
-
+    
     const productId = await getProductIDByName(productName);
     if (productId === null) {
         return { error: `Product '${productName}' not found.` };
