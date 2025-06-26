@@ -14,6 +14,11 @@ import {
     getKpiData as getKpiDataFlow,
     type KpiData,
 } from "@/ai/flows/get-kpi-data";
+import {
+    getProductKpiData as getProductKpiDataFlow,
+    type ProductKpiData,
+    type ProductKpiDataInput,
+} from "@/ai/flows/get-product-kpi-data";
 
 export async function answerVulnerabilityQuestions(
   input: AnswerVulnerabilityQuestionsInput
@@ -29,4 +34,10 @@ export async function generateDefectDojoQueries(
 
 export async function getKpiData(): Promise<KpiData> {
     return await getKpiDataFlow();
+}
+
+export async function getProductKpiData(
+    input: ProductKpiDataInput
+): Promise<ProductKpiData> {
+    return await getProductKpiDataFlow(input);
 }

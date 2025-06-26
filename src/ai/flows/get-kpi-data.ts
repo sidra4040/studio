@@ -9,7 +9,8 @@
 import { z } from 'genkit';
 import { 
     getOpenVsClosedCounts,
-    getProductVulnerabilitySummary
+    getProductVulnerabilitySummary,
+    getProductList,
 } from '@/services/defectdojo';
 
 const KpiDataSchema = z.object({
@@ -26,6 +27,7 @@ const KpiDataSchema = z.object({
         product: z.string(),
         vulnerabilities: z.number(),
     })).describe('Data for top 5 vulnerable products chart.'),
+    productList: z.array(z.string()).describe('A list of all product names.'),
 });
 
 export type KpiData = z.infer<typeof KpiDataSchema>;
@@ -34,9 +36,10 @@ export async function getKpiData(): Promise<KpiData> {
     try {
         console.log("Fetching live KPI data from DefectDojo...");
         // Fetch all data in parallel
-        const [productSummary, openClosedCounts] = await Promise.all([
+        const [productSummary, openClosedCounts, productList] = await Promise.all([
             getProductVulnerabilitySummary(),
             getOpenVsClosedCounts(),
+            getProductList(),
         ]);
 
         // Calculate overall severity counts from the product summary
@@ -68,6 +71,7 @@ export async function getKpiData(): Promise<KpiData> {
                 { name: 'Closed', value: openClosedCounts.closed, fill: 'hsl(var(--chart-2))' },
             ],
             topVulnerableProducts: topProducts,
+            productList: Array.isArray(productList) ? productList : [],
         };
         
         console.log("Successfully fetched KPI data.");
@@ -88,6 +92,7 @@ export async function getKpiData(): Promise<KpiData> {
                 { name: 'Closed', value: 0, fill: 'hsl(var(--chart-2))' },
             ],
             topVulnerableProducts: [],
+            productList: [],
         };
     }
 }
