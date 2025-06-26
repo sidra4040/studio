@@ -132,7 +132,7 @@ export default function ChatPage() {
                 ) : (
                   <ReactMarkdown
                     remarkPlugins={[remarkGfm]}
-                    className="space-y-2"
+                    className="prose prose-sm prose-invert max-w-none"
                     components={{
                       p: ({node, ...props}) => <p className="leading-relaxed last:mb-0" {...props} />,
                       ul: ({node, ...props}) => <ul className="space-y-1 list-disc list-outside ml-4" {...props} />,
