@@ -1,4 +1,3 @@
-
 'use server';
 /**
  * @fileOverview An AI flow to generate a detailed analysis of a single product's vulnerabilities.
@@ -91,14 +90,31 @@ const getProductAnalysisFlow = ai.defineFlow(
     outputSchema: GetProductAnalysisOutputSchema,
   },
   async (input) => {
-    // 1. Get all critical and high findings for the product
+    // 1. Get critical and high findings for the product, but limit the amount to avoid token overload.
     const criticalFindingsPromise = getFindings({ productName: input.productName, severity: 'Critical', limit: 100, active: true });
     const highFindingsPromise = getFindings({ productName: input.productName, severity: 'High', limit: 100, active: true });
 
     const [criticalResult, highResult] = await Promise.all([criticalFindingsPromise, highFindingsPromise]);
     
-    const criticalData = JSON.parse(criticalResult);
-    const highData = JSON.parse(highResult);
+    // Check for errors in the results before parsing
+    let criticalData: any = { findings: [] };
+    try {
+        criticalData = JSON.parse(criticalResult);
+        if (criticalData.error) {
+            console.warn(`Could not fetch critical findings for ${input.productName}: ${criticalData.error}`);
+            criticalData.findings = [];
+        }
+    } catch(e) { /* ignore parse error */ }
+   
+    let highData: any = { findings: [] };
+    try {
+        highData = JSON.parse(highResult);
+        if (highData.error) {
+            console.warn(`Could not fetch high findings for ${input.productName}: ${highData.error}`);
+            highData.findings = [];
+        }
+    } catch(e) { /* ignore parse error */ }
+
 
     // Combine findings, ensuring they are arrays
     const allFindings = [

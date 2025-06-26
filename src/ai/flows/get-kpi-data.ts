@@ -36,29 +36,34 @@ export async function getKpiData(): Promise<KpiData> {
     try {
         console.log("Fetching live KPI data from DefectDojo...");
         // Fetch all data in parallel
-        const [productSummary, openClosedCounts, productList] = await Promise.all([
+        const [productSummary, openClosedData, productListData] = await Promise.all([
             getProductVulnerabilitySummary(),
             getOpenVsClosedCounts(),
             getProductList(),
         ]);
+        
+        const openClosedCounts = openClosedData.error ? { open: 0, closed: 0 } : openClosedData;
+        const productList = Array.isArray(productListData) ? productListData : [];
+
 
         // Calculate overall severity counts from the product summary
         const severityCounts: Record<string, number> = { Critical: 0, High: 0, Medium: 0, Low: 0, Info: 0 };
-        Object.values(productSummary).forEach(product => {
-            severityCounts.Critical += product.Critical || 0;
-            severityCounts.High += product.High || 0;
-            severityCounts.Medium += product.Medium || 0;
-            severityCounts.Low += product.Low || 0;
-            severityCounts.Info += product.Info || 0;
-        });
+        if (productSummary) {
+            Object.values(productSummary).forEach(product => {
+                severityCounts.Critical += product.Critical || 0;
+                severityCounts.High += product.High || 0;
+                severityCounts.Medium += product.Medium || 0;
+                severityCounts.Low += product.Low || 0;
+                severityCounts.Info += product.Info || 0;
+            });
+        }
+
 
         // Calculate top 5 vulnerable products from the summary
-        const productTotals = Object.entries(productSummary).map(([product, counts]) => ({
+        const topProducts = productSummary ? Object.entries(productSummary).map(([product, counts]) => ({
             product,
             vulnerabilities: counts.Total || 0,
-        }));
-        productTotals.sort((a, b) => b.vulnerabilities - a.vulnerabilities);
-        const topProducts = productTotals.slice(0, 5);
+        })).sort((a, b) => b.vulnerabilities - a.vulnerabilities).slice(0, 5) : [];
 
 
         const kpiData: KpiData = {
@@ -71,7 +76,7 @@ export async function getKpiData(): Promise<KpiData> {
                 { name: 'Closed', value: openClosedCounts.closed, fill: 'hsl(var(--chart-2))' },
             ],
             topVulnerableProducts: topProducts,
-            productList: Array.isArray(productList) ? productList : [],
+            productList: productList,
         };
         
         console.log("Successfully fetched KPI data.");

@@ -16,11 +16,9 @@ const EngagementSchema = z.object({
     name: z.string(),
 });
 
-const TestTypeSchema = z.object({
-    id: z.number(),
-    name: z.string(),
+const FindingCountSchema = z.object({
+    count: z.number(),
 });
-
 
 const FindingSchema = z.object({
     id: z.number(),
@@ -131,19 +129,6 @@ export async function getEngagementList() {
     }
 }
 
-/**
- * Gets a list of all Test Types (scanners/tools) from DefectDojo.
- */
-async function getTestTypeList() {
-    try {
-        return await defectDojoFetchAll<z.infer<typeof TestTypeSchema>>('test_types/?limit=1000');
-    } catch (error) {
-        console.error("Error fetching test type list:", error);
-        return [];
-    }
-}
-
-
 interface GetFindingsParams {
     productName?: string;
     severity?: string;
@@ -153,7 +138,7 @@ interface GetFindingsParams {
 }
 /**
  * Fetches findings from DefectDojo and returns a detailed summary.
- * Correctly filters by product using test__engagement__product.
+ * Correctly filters by product using test__engagement__product and/or tool name.
  */
 export async function getFindings(params: GetFindingsParams): Promise<string> {
     try {
@@ -178,14 +163,8 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
         }
        
         if (params.toolName) {
-            const testTypes = await getTestTypeList();
-            const matchingTool = testTypes.find(tt => tt.name.toLowerCase() === params.toolName!.toLowerCase());
-
-            if (!matchingTool) {
-                return JSON.stringify({ message: `Tool named '${params.toolName}' was not found in DefectDojo. Please check the tool name.` });
-            }
-            // Use the exact name for a precise match
-            queryParts.push(`test__test_type__name=${encodeURIComponent(matchingTool.name)}`);
+            // Use a case-insensitive 'contains' filter for the tool name for more robust matching.
+            queryParts.push(`test__test_type__name__icontains=${encodeURIComponent(params.toolName)}`);
         }
 
         // Prefetch related data to get tool name and product info
@@ -244,74 +223,84 @@ export async function getVulnerabilityCountBySeverity(productName: string) {
     }
     const productFilter = `&test__engagement__product=${productId}&duplicate=false`;
 
-    // Use Promise.all to fetch counts in parallel for better performance
-    const countPromises = severities.map(async (severity) => {
-        const data = await defectDojoFetch(`findings/?severity=${severity}&active=true&limit=1${productFilter}`);
-        const parsedData = FindingListSchema.parse(data);
-        return { severity, count: parsedData.count };
-    });
+    try {
+        const countPromises = severities.map(async (severity) => {
+            // Use limit=1 to get the total count without fetching all data
+            const data = await defectDojoFetch(`findings/?severity=${severity}&active=true&limit=1${productFilter}`);
+            const parsedData = FindingCountSchema.parse(data);
+            return { severity, count: parsedData.count };
+        });
 
-    const results = await Promise.all(countPromises);
-    
-    let total = 0;
-    for (const result of results) {
-        counts[result.severity] = result.count;
-        total += result.count;
+        const results = await Promise.all(countPromises);
+        
+        let total = 0;
+        for (const result of results) {
+            counts[result.severity] = result.count;
+            total += result.count;
+        }
+        counts['Total'] = total;
+        
+        return counts;
+    } catch(error) {
+        console.error(`Error fetching severity counts for ${productName}:`, error);
+        return { error: `Could not retrieve counts for ${productName}` };
     }
-    counts['Total'] = total;
-    
-    return counts;
 }
 
 // For KPI Dashboard & Aggregate Queries
 export async function getOpenVsClosedCounts() {
-    // This function fetches only the count of findings, which is much more efficient
-    // than fetching all findings.
+    // This function fetches only the count of findings, which is much more efficient.
     try {
-        const openData = await defectDojoFetch(`findings/?active=true&duplicate=false&limit=1`);
-        const closedData = await defectDojoFetch(`findings/?active=false&duplicate=false&limit=1`);
+        const openDataPromise = defectDojoFetch(`findings/?active=true&duplicate=false&limit=1`);
+        const closedDataPromise = defectDojoFetch(`findings/?active=false&duplicate=false&limit=1`);
+        
+        const [openData, closedData] = await Promise.all([openDataPromise, closedDataPromise]);
+
         return {
-            open: FindingListSchema.parse(openData).count,
-            closed: FindingListSchema.parse(closedData).count,
+            open: FindingCountSchema.parse(openData).count,
+            closed: FindingCountSchema.parse(closedData).count,
         };
     } catch (error) {
         console.error("Error fetching open/closed counts:", error);
-        return { open: 0, closed: 0 };
+        return { error: "Failed to fetch open/closed counts", open: 0, closed: 0 };
     }
 }
 
 
+/**
+ * Efficiently gets vulnerability summaries for all products.
+ */
 export async function getProductVulnerabilitySummary() {
-    // Fetches all active findings using pagination and aggregates counts by product.
-    // This can be slow on instances with a very large number of findings.
-    console.log("Fetching full product vulnerability summary. This may be slow.")
-    const allFindings = await defectDojoFetchAll<z.infer<typeof FindingSchema>>(
-        'findings/?active=true&duplicate=false&limit=1000&prefetch=product'
-    );
-
-    const summary: Record<string, { Critical: number, High: number, Medium: number, Low: number, Info: number, Total: number }> = {};
-
-    for (const finding of allFindings) {
-        if (finding.product) {
-            const productName = finding.product.name;
-            if (!summary[productName]) {
-                summary[productName] = { Critical: 0, High: 0, Medium: 0, Low: 0, Info: 0, Total: 0 };
-            }
-            const severity = finding.severity as keyof typeof summary[string];
-            if (summary[productName][severity] !== undefined) {
-                summary[productName][severity]++;
-            }
-            summary[productName].Total++;
+    console.log("Fetching efficient product vulnerability summary...");
+    try {
+        const productList = await getProductList();
+        if (!Array.isArray(productList)) {
+            throw new Error("Could not fetch product list.");
         }
+
+        const summary: Record<string, any> = {};
+
+        const summaryPromises = productList.map(async (productName) => {
+            const counts = await getVulnerabilityCountBySeverity(productName);
+            if (!counts.error) {
+                summary[productName] = counts;
+            }
+        });
+
+        await Promise.all(summaryPromises);
+
+        console.log("Finished calculating product vulnerability summary.");
+        return summary;
+    } catch(error) {
+        console.error("Error in getProductVulnerabilitySummary:", error);
+        return null;
     }
-    console.log("Finished calculating product vulnerability summary.");
-    return summary;
 }
 
 export async function getTotalFindingCount() {
     try {
         const data = await defectDojoFetch('findings/?duplicate=false&limit=1');
-        return { count: FindingListSchema.parse(data).count };
+        return { count: FindingCountSchema.parse(data).count };
     } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         return { error: `Failed to retrieve total finding count: ${errorMessage}` };
