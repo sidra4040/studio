@@ -16,6 +16,11 @@ const EngagementSchema = z.object({
     name: z.string(),
 });
 
+const TestTypeSchema = z.object({
+    id: z.number(),
+    name: z.string(),
+});
+
 const FindingCountSchema = z.object({
     count: z.number(),
 });
@@ -161,8 +166,13 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
         }
        
         if (params.toolName) {
-            // Use a case-insensitive contains filter for the tool name for more robust matching.
-            queryParts.push(`test__test_type__name__icontains=${encodeURIComponent(params.toolName)}`);
+            const allTestTypes = await defectDojoFetchAll<z.infer<typeof TestTypeSchema>>('test_types/?limit=1000');
+            const tool = allTestTypes.find(t => t.name.toLowerCase() === params.toolName!.toLowerCase());
+
+            if (!tool) {
+                 return JSON.stringify({ message: `Tool with name '${params.toolName}' was not found in DefectDojo.` });
+            }
+            queryParts.push(`test__test_type=${tool.id}`);
         }
 
         // Prefetch related data to get tool name and product info
