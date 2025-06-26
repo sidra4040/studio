@@ -16,6 +16,11 @@ const EngagementSchema = z.object({
     name: z.string(),
 });
 
+const TestTypeSchema = z.object({
+    id: z.number(),
+    name: z.string(),
+});
+
 
 const FindingSchema = z.object({
     id: z.number(),
@@ -102,6 +107,22 @@ async function getProductIDByName(productName: string): Promise<number | null> {
     }
 }
 
+/**
+ * Finds a test type (tool) by name (case-insensitive) and returns its ID.
+ * @param toolName The name of the tool/scanner to find.
+ * @returns The test type ID, or null if not found.
+ */
+async function getTestTypeIDByName(toolName: string): Promise<number | null> {
+    try {
+        const testTypes = await defectDojoFetchAll<z.infer<typeof TestTypeSchema>>('test_types/?limit=1000');
+        const testType = testTypes.find(t => t.name.trim().toLowerCase() === toolName.trim().toLowerCase());
+        return testType ? testType.id : null;
+    } catch (error) {
+        console.error(`Error fetching test type ID for "${toolName}":`, error);
+        return null;
+    }
+}
+
 
 /**
  * Gets a list of all products from DefectDojo.
@@ -162,7 +183,11 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
         }
        
         if (params.toolName) {
-            queryParts.push(`test__test_type__name=${params.toolName}`);
+            const toolId = await getTestTypeIDByName(params.toolName);
+            if (toolId === null) {
+                return JSON.stringify({ message: `Tool with name '${params.toolName}' not found.` });
+            }
+            queryParts.push(`test__test_type=${toolId}`);
         }
 
         // Prefetch related data to get tool name and product info
@@ -242,6 +267,7 @@ export async function getVulnerabilityCountBySeverity(productName: string) {
 
 // For KPI Dashboard & Aggregate Queries
 export async function getOpenVsClosedCounts() {
+    // This function can be slow if there are many findings. We get the total count from each endpoint.
     const openData = await defectDojoFetch(`findings/?active=true&limit=1&duplicate=false`);
     const closedData = await defectDojoFetch(`findings/?active=false&limit=1&duplicate=false`);
     return {
@@ -250,8 +276,10 @@ export async function getOpenVsClosedCounts() {
     };
 }
 
+
 export async function getProductVulnerabilitySummary() {
     // Fetches all active findings using pagination and aggregates counts by product.
+    // This is more efficient than querying for each product individually.
     const allFindings = await defectDojoFetchAll<z.infer<typeof FindingSchema>>(
         'findings/?active=true&duplicate=false&limit=1000&prefetch=product'
     );
