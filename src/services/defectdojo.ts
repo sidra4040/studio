@@ -179,14 +179,8 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
         }
        
         if (params.toolName) {
-            const allTestTypes = await defectDojoFetchAll<z.infer<typeof TestTypeSchema>>('test_types/?limit=1000');
-            // Use .includes() for a more flexible, case-insensitive match
-            const tool = allTestTypes.find(t => t.name.toLowerCase().includes(params.toolName!.toLowerCase()));
-
-            if (!tool) {
-                 return JSON.stringify({ message: `Tool with name '${params.toolName}' was not found in DefectDojo.` });
-            }
-            queryParts.push(`test__test_type=${tool.id}`);
+            // Directly filter by tool name using Django's __icontains for a flexible, case-insensitive search
+            queryParts.push(`test__test_type__name__icontains=${encodeURIComponent(params.toolName)}`);
         }
 
         // Prefetch related data to get tool name and product info
@@ -209,6 +203,7 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
         const summary = {
             totalCount: parsedData.data.count,
             showing: parsedData.data.results.length,
+            toolName: params.toolName || 'All Tools',
             productName: params.productName || 'All Products',
             findings: parsedData.data.results.map(f => ({
                 id: f.id,
