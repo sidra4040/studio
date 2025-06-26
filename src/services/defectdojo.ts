@@ -16,6 +16,12 @@ const EngagementSchema = z.object({
     name: z.string(),
 });
 
+const TestTypeSchema = z.object({
+    id: z.number(),
+    name: z.string(),
+});
+
+
 const FindingCountSchema = z.object({
     count: z.number(),
 });
@@ -106,6 +112,22 @@ async function getProductIDByName(productName: string): Promise<number | null> {
 }
 
 /**
+ * Finds a test type (tool) by name and returns its ID for precise filtering.
+ * @param toolName The name of the tool to find.
+ * @returns The test type ID, or null if not found.
+ */
+async function getTestTypeIDByName(toolName: string): Promise<number | null> {
+    try {
+        const testTypes = await defectDojoFetchAll<z.infer<typeof TestTypeSchema>>('test_types/?limit=1000');
+        const testType = testTypes.find(t => t.name.trim().toLowerCase() === toolName.trim().toLowerCase());
+        return testType ? testType.id : null;
+    } catch (error) {
+        console.error(`Error fetching test type ID for "${toolName}":`, error);
+        return null;
+    }
+}
+
+/**
  * Gets a list of all products from DefectDojo.
  */
 export async function getProductList() {
@@ -163,8 +185,11 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
         }
        
         if (params.toolName) {
-            // Use a case-insensitive 'contains' filter for the tool name for more robust matching.
-            queryParts.push(`test__test_type__name__icontains=${encodeURIComponent(params.toolName)}`);
+            const testTypeId = await getTestTypeIDByName(params.toolName);
+            if (testTypeId === null) {
+                return JSON.stringify({ message: `Tool with name '${params.toolName}' not found.` });
+            }
+            queryParts.push(`test__test_type=${testTypeId}`);
         }
 
         // Prefetch related data to get tool name and product info

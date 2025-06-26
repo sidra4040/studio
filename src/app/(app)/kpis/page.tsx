@@ -4,11 +4,12 @@ import React, { useState, useEffect } from 'react';
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis, Pie, PieChart, Cell, Legend, Tooltip as RechartsTooltip } from 'recharts';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { ChartContainer, ChartTooltipContent } from '@/components/ui/chart';
-import { getKpiData, getProductKpiData, type KpiData, type ProductKpiData } from '@/app/actions';
+import { getProductKpiData, type ProductKpiData } from '@/app/actions';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
+import { useData } from '@/context/DataContext';
 
 
 const chartConfigBySeverity = {
@@ -64,28 +65,10 @@ const KpiSkeleton = () => (
 
 
 export default function KpiPage() {
-    const [kpiData, setKpiData] = useState<KpiData | null>(null);
-    const [isLoading, setIsLoading] = useState(true);
-
+    const { kpiData, isLoading } = useData();
     const [selectedProduct, setSelectedProduct] = useState<string>('');
     const [productData, setProductData] = useState<ProductKpiData | null>(null);
     const [isProductDataLoading, setIsProductDataLoading] = useState(false);
-
-    useEffect(() => {
-        const fetchData = async () => {
-            setIsLoading(true);
-            try {
-                const data = await getKpiData();
-                setKpiData(data);
-            } catch (error) {
-                console.error("Failed to fetch KPI data", error);
-            } finally {
-                setIsLoading(false);
-            }
-        };
-
-        fetchData();
-    }, []);
 
     const handleProductSelect = async (productName: string) => {
         if (!productName || productName === 'all-products') {
