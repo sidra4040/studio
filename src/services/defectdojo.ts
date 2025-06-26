@@ -30,6 +30,7 @@ const FindingSchema = z.object({
     }).optional(), // For prefetched data
     cwe: z.number().nullable(),
     cve: z.string().nullable().optional(),
+    cvssv3_score: z.string().nullable().optional(),
     test: z.any().optional(),
 });
 
@@ -151,9 +152,6 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
         if (params.limit) {
             queryParts.push(`limit=${params.limit}`);
         }
-        if (params.toolName) {
-            queryParts.push(`test__test_type__name=${params.toolName}`);
-        }
 
         if (!params.productName) {
             return JSON.stringify({ error: `A product name must be specified to get findings.` });
@@ -165,6 +163,10 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
         }
         queryParts.push(`test__engagement__product=${productId}`);
        
+        if (params.toolName) {
+            queryParts.push(`test__test_type__name=${params.toolName}`);
+        }
+
         // Prefetch related data to get tool name and product info
         queryParts.push('prefetch=product', 'prefetch=test__test_type');
 
@@ -191,6 +193,7 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
                 title: f.title,
                 cve: f.cve || 'N/A',
                 cwe: f.cwe ? `CWE-${f.cwe}` : 'Unknown',
+                cvssv3_score: f.cvssv3_score || 'N/A',
                 severity: f.severity,
                 tool: (f.test && typeof f.test === 'object' && !Array.isArray(f.test) && f.test.test_type?.name) || 'Unknown',
                 description: f.description,
