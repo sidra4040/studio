@@ -30,7 +30,7 @@ const FindingSchema = z.object({
     }).optional(), // For prefetched data
     cwe: z.number().nullable(),
     cve: z.string().nullable().optional(),
-    cvssv3_score: z.string().nullable().optional(),
+    cvssv3_score: z.union([z.string(), z.number()]).nullable().optional(),
     test: z.any().optional(),
 });
 
