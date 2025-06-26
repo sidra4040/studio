@@ -113,14 +113,15 @@ async function getProductIDByName(productName: string): Promise<number | null> {
 
 /**
  * Finds a test type (tool) by name and returns its ID for precise filtering.
+ * Uses a case-insensitive "contains" search to be more lenient.
  * @param toolName The name of the tool to find.
  * @returns The test type ID, or null if not found.
  */
 async function getTestTypeIDByName(toolName: string): Promise<number | null> {
     try {
         const testTypes = await defectDojoFetchAll<z.infer<typeof TestTypeSchema>>('test_types/?limit=1000');
-        const testType = testTypes.find(t => t.name.trim().toLowerCase() === toolName.trim().toLowerCase());
-        return testType ? testType.id : null;
+        const tool = testTypes.find(t => t.name.trim().toLowerCase().includes(toolName.trim().toLowerCase()));
+        return tool ? tool.id : null;
     } catch (error) {
         console.error(`Error fetching test type ID for "${toolName}":`, error);
         return null;
@@ -187,7 +188,7 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
         if (params.toolName) {
             const testTypeId = await getTestTypeIDByName(params.toolName);
             if (testTypeId === null) {
-                return JSON.stringify({ message: `Tool with name '${params.toolName}' not found.` });
+                return JSON.stringify({ message: `Tool with name '${params.toolName}' could not be found. Please check the spelling.` });
             }
             queryParts.push(`test__test_type=${testTypeId}`);
         }

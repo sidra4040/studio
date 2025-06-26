@@ -91,8 +91,8 @@ const getProductAnalysisFlow = ai.defineFlow(
   },
   async (input) => {
     // 1. Get critical and high findings for the product, but limit the amount to avoid token overload.
-    const criticalFindingsPromise = getFindings({ productName: input.productName, severity: 'Critical', limit: 100, active: true });
-    const highFindingsPromise = getFindings({ productName: input.productName, severity: 'High', limit: 100, active: true });
+    const criticalFindingsPromise = getFindings({ productName: input.productName, severity: 'Critical', limit: 25, active: true });
+    const highFindingsPromise = getFindings({ productName: input.productName, severity: 'High', limit: 25, active: true });
 
     const [criticalResult, highResult] = await Promise.all([criticalFindingsPromise, highFindingsPromise]);
     
