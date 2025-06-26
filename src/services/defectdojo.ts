@@ -39,10 +39,6 @@ const FindingSchema = z.object({
     test: z.any().optional(),
 });
 
-const FindingCountSchema = z.object({
-    count: z.number(),
-});
-
 const FindingListSchema = z.object({
     count: z.number(),
     next: z.string().nullable(),
@@ -135,6 +131,18 @@ export async function getEngagementList() {
     }
 }
 
+/**
+ * Gets a list of all Test Types (scanners/tools) from DefectDojo.
+ */
+async function getTestTypeList() {
+    try {
+        return await defectDojoFetchAll<z.infer<typeof TestTypeSchema>>('test_types/?limit=1000');
+    } catch (error) {
+        console.error("Error fetching test type list:", error);
+        return [];
+    }
+}
+
 
 interface GetFindingsParams {
     productName?: string;
@@ -170,8 +178,14 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
         }
        
         if (params.toolName) {
-             // Use __icontains for a case-insensitive search directly on the tool name
-            queryParts.push(`test__test_type__name__icontains=${encodeURIComponent(params.toolName)}`);
+            const testTypes = await getTestTypeList();
+            const matchingTool = testTypes.find(tt => tt.name.toLowerCase() === params.toolName!.toLowerCase());
+
+            if (!matchingTool) {
+                return JSON.stringify({ message: `Tool named '${params.toolName}' was not found in DefectDojo. Please check the tool name.` });
+            }
+            // Use the exact name for a precise match
+            queryParts.push(`test__test_type__name=${encodeURIComponent(matchingTool.name)}`);
         }
 
         // Prefetch related data to get tool name and product info
@@ -187,7 +201,7 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
         }
 
         if (parsedData.data.results.length === 0) {
-             const message = `No active ${params.severity || ''} vulnerabilities were found for the product "${params.productName || 'any product'}" ${params.toolName ? `from the tool "${params.toolName}"` : ''}.`;
+             const message = `No active ${params.severity || ''} vulnerabilities were found for the specified criteria.`;
             return JSON.stringify({ message });
         }
         
@@ -251,13 +265,19 @@ export async function getVulnerabilityCountBySeverity(productName: string) {
 
 // For KPI Dashboard & Aggregate Queries
 export async function getOpenVsClosedCounts() {
-    // This function is now optimized to use the /counts endpoint.
-    const openData = await defectDojoFetch(`findings/counts/?active=true&duplicate=false`);
-    const closedData = await defectDojoFetch(`findings/counts/?active=false&duplicate=false`);
-    return {
-        open: FindingCountSchema.parse(openData[0]).count,
-        closed: FindingCountSchema.parse(closedData[0]).count,
-    };
+    // This function fetches only the count of findings, which is much more efficient
+    // than fetching all findings.
+    try {
+        const openData = await defectDojoFetch(`findings/?active=true&duplicate=false&limit=1`);
+        const closedData = await defectDojoFetch(`findings/?active=false&duplicate=false&limit=1`);
+        return {
+            open: FindingListSchema.parse(openData).count,
+            closed: FindingListSchema.parse(closedData).count,
+        };
+    } catch (error) {
+        console.error("Error fetching open/closed counts:", error);
+        return { open: 0, closed: 0 };
+    }
 }
 
 
@@ -290,8 +310,8 @@ export async function getProductVulnerabilitySummary() {
 
 export async function getTotalFindingCount() {
     try {
-        const data = await defectDojoFetch('findings/counts/?duplicate=false');
-        return { count: FindingCountSchema.parse(data[0]).count };
+        const data = await defectDojoFetch('findings/?duplicate=false&limit=1');
+        return { count: FindingListSchema.parse(data).count };
     } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         return { error: `Failed to retrieve total finding count: ${errorMessage}` };
