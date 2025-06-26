@@ -1,3 +1,4 @@
+
 'use server';
 /**
  * @fileOverview An AI flow to generate a detailed analysis of a single product's vulnerabilities.
@@ -11,12 +12,12 @@ import { ai } from '@/ai/genkit';
 import { getFindings } from '@/services/defectdojo';
 import { z } from 'genkit';
 
-export const GetProductAnalysisInputSchema = z.object({
+const GetProductAnalysisInputSchema = z.object({
   productName: z.string().describe('The name of the product to analyze.'),
 });
 export type GetProductAnalysisInput = z.infer<typeof GetProductAnalysisInputSchema>;
 
-export const GetProductAnalysisOutputSchema = z.object({
+const GetProductAnalysisOutputSchema = z.object({
   analysis: z.string().describe('A detailed, AI-generated analysis of the product vulnerabilities in Markdown format.'),
 });
 export type GetProductAnalysisOutput = z.infer<typeof GetProductAnalysisOutputSchema>;
@@ -25,6 +26,13 @@ const AnalysisPromptInputSchema = z.object({
   productName: z.string(),
   findingsJson: z.string(),
 });
+
+/**
+ * Wraps the Genkit flow to be used as a Server Action.
+ */
+export async function getProductAnalysis(input: GetProductAnalysisInput): Promise<GetProductAnalysisOutput> {
+  return getProductAnalysisFlow(input);
+}
 
 const analysisPrompt = ai.definePrompt({
   name: 'productAnalysisPrompt',
@@ -76,9 +84,9 @@ Let me know if you need a more detailed breakdown of any of these items!
 `,
 });
 
-export const getProductAnalysis = ai.defineFlow(
+const getProductAnalysisFlow = ai.defineFlow(
   {
-    name: 'getProductAnalysis',
+    name: 'getProductAnalysisFlow',
     inputSchema: GetProductAnalysisInputSchema,
     outputSchema: GetProductAnalysisOutputSchema,
   },
@@ -94,8 +102,8 @@ export const getProductAnalysis = ai.defineFlow(
 
     // Combine findings, ensuring they are arrays
     const allFindings = [
-        ...(criticalData.findings || []),
-        ...(highData.findings || [])
+        ...(Array.isArray(criticalData.findings) ? criticalData.findings : []),
+        ...(Array.isArray(highData.findings) ? highData.findings : [])
     ];
     
     if (allFindings.length === 0) {
