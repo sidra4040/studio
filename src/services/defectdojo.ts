@@ -110,31 +110,6 @@ async function getProductIDByName(productName: string): Promise<number | null> {
 }
 
 /**
- * Finds a tool (test type) by name (case-insensitive, flexible matching) and returns its ID.
- * @param toolName The name of the tool to find.
- * @returns The tool ID, or null if not found.
- */
-async function getToolIDByName(toolName: string): Promise<number | null> {
-    try {
-        const testTypes = await defectDojoFetchAll<z.infer<typeof TestTypeSchema>>('test_types/?limit=1000');
-        const searchTerm = toolName.trim().toLowerCase();
-        
-        // Prioritize exact match
-        let tool = testTypes.find(t => t.name.trim().toLowerCase() === searchTerm);
-        if (tool) return tool.id;
-        
-        // Fallback to partial match
-        tool = testTypes.find(t => t.name.trim().toLowerCase().includes(searchTerm));
-        if (tool) return tool.id;
-
-        return null;
-    } catch (error) {
-        console.error(`Error fetching tool ID for "${toolName}":`, error);
-        return null;
-    }
-}
-
-/**
  * Gets a list of all products from DefectDojo.
  */
 export async function getProductList() {
@@ -179,7 +154,7 @@ interface GetFindingsParams {
 }
 /**
  * Fetches findings from DefectDojo and returns a detailed summary.
- * Correctly filters by product using product ID and/or by tool using tool ID.
+ * Correctly filters by product using product ID and/or by tool using a case-insensitive name search.
  */
 export async function getFindings(params: GetFindingsParams): Promise<string> {
     try {
@@ -204,11 +179,8 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
         }
        
         if (params.toolName) {
-            const toolId = await getToolIDByName(params.toolName);
-            if (toolId === null) {
-                return JSON.stringify({ message: `Tool with name containing '${params.toolName}' not found.` });
-            }
-            queryParts.push(`test__test_type=${toolId}`);
+            // Use the API's built-in case-insensitive "contains" search for the tool name
+            queryParts.push(`test__test_type__name__icontains=${encodeURIComponent(params.toolName)}`);
         }
 
         // Prefetch related data to get tool name and product info
