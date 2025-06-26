@@ -88,7 +88,7 @@ export default function KpiPage() {
     }, []);
 
     const handleProductSelect = async (productName: string) => {
-        if (!productName) {
+        if (!productName || productName === 'all-products') {
             setSelectedProduct('');
             setProductData(null);
             return;
@@ -198,13 +198,13 @@ export default function KpiPage() {
                 <CardDescription>Select a product to see its severity distribution and top critical vulnerabilities.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
-                <Select onValueChange={handleProductSelect} defaultValue="">
+                <Select onValueChange={handleProductSelect} value={selectedProduct}>
                     <SelectTrigger className="w-full md:w-1/3">
                         <SelectValue placeholder="Select a product..." />
                     </SelectTrigger>
                     <SelectContent>
-                        <SelectItem value="">-- Select a Product --</SelectItem>
-                        {kpiData.productList.map(product => (
+                        <SelectItem value="all-products">-- All Products --</SelectItem>
+                        {kpiData.productList.filter(p => !!p).map(product => (
                             <SelectItem key={product} value={product}>{product}</SelectItem>
                         ))}
                     </SelectContent>
