@@ -16,12 +16,6 @@ const EngagementSchema = z.object({
     name: z.string(),
 });
 
-const TestTypeSchema = z.object({
-    id: z.number(),
-    name: z.string(),
-});
-
-
 const FindingCountSchema = z.object({
     count: z.number(),
 });
@@ -78,8 +72,6 @@ async function defectDojoFetch(endpoint: string, options: RequestInit = {}) {
 
 /**
  * Fetches all results from a paginated DefectDojo endpoint.
- * @param endpoint The initial endpoint to query.
- * @returns A flattened array of all results.
  */
 async function defectDojoFetchAll<T>(endpoint: string): Promise<T[]> {
     let results: T[] = [];
@@ -107,23 +99,6 @@ async function getProductIDByName(productName: string): Promise<number | null> {
         return product ? product.id : null;
     } catch (error) {
         console.error(`Error fetching product ID for "${productName}":`, error);
-        return null;
-    }
-}
-
-/**
- * Finds a test type (tool) by name and returns its ID for precise filtering.
- * Uses a case-insensitive "contains" search to be more lenient.
- * @param toolName The name of the tool to find.
- * @returns The test type ID, or null if not found.
- */
-async function getTestTypeIDByName(toolName: string): Promise<number | null> {
-    try {
-        const testTypes = await defectDojoFetchAll<z.infer<typeof TestTypeSchema>>('test_types/?limit=1000');
-        const tool = testTypes.find(t => t.name.trim().toLowerCase().includes(toolName.trim().toLowerCase()));
-        return tool ? tool.id : null;
-    } catch (error) {
-        console.error(`Error fetching test type ID for "${toolName}":`, error);
         return null;
     }
 }
@@ -186,11 +161,8 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
         }
        
         if (params.toolName) {
-            const testTypeId = await getTestTypeIDByName(params.toolName);
-            if (testTypeId === null) {
-                return JSON.stringify({ message: `Tool with name '${params.toolName}' could not be found. Please check the spelling.` });
-            }
-            queryParts.push(`test__test_type=${testTypeId}`);
+            // Use a case-insensitive contains filter for the tool name for more robust matching.
+            queryParts.push(`test__test_type__name__icontains=${encodeURIComponent(params.toolName)}`);
         }
 
         // Prefetch related data to get tool name and product info
