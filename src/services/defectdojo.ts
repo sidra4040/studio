@@ -321,3 +321,52 @@ export async function getTotalFindingCount() {
         return { error: `Failed to retrieve total finding count: ${errorMessage}` };
     }
 }
+
+/**
+ * Gets the top critical vulnerability for each product.
+ */
+export async function getTopCriticalVulnerabilityPerProduct(): Promise<string> {
+    console.log("Fetching top critical vulnerability for each product...");
+    try {
+        const productList = await getProductList();
+        if (!Array.isArray(productList) || productList.length === 0) {
+            return JSON.stringify({ message: "No products found to analyze." });
+        }
+
+        const vulnerabilityPromises = productList.map(async (productName) => {
+            const findingResult = await getFindings({ productName, severity: 'Critical', limit: 1 });
+            try {
+                const findingsData = JSON.parse(findingResult);
+                if (findingsData.findings && findingsData.findings.length > 0) {
+                    return {
+                        product: productName,
+                        vulnerability: findingsData.findings[0],
+                    };
+                }
+                return {
+                    product: productName,
+                    vulnerability: null, // No critical vulnerability found
+                };
+            } catch (e) {
+                return {
+                    product: productName,
+                    vulnerability: null, // Error parsing or no finding
+                };
+            }
+        });
+
+        const results = await Promise.all(vulnerabilityPromises);
+        const filteredResults = results.filter(r => r.vulnerability !== null);
+
+        if (filteredResults.length === 0) {
+            return JSON.stringify({ message: "No critical vulnerabilities found for any product." });
+        }
+        
+        return JSON.stringify({ vulnerabilitiesByProduct: filteredResults }, null, 2);
+
+    } catch (error) {
+        console.error("Error in getTopCriticalVulnerabilityPerProduct:", error);
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        return JSON.stringify({ error: `An exception occurred: ${errorMessage}` });
+    }
+}
