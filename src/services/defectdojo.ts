@@ -2,6 +2,8 @@
 'use server';
 
 import { z } from 'zod';
+import { TOOL_ENGAGEMENT_MAP, PRODUCT_MAP } from './defectdojo-maps';
+
 
 const API_URL = process.env.DEFECTDOJO_API_URL;
 const API_KEY = process.env.DEFECTDOJO_API_KEY;
@@ -95,14 +97,22 @@ async function defectDojoFetchAll<T>(endpoint: string): Promise<T[]> {
 
 /**
  * Finds a product by name (case-insensitive) and returns its ID.
- * @param productName The name of the product to find.
- * @returns The product ID, or null if not found.
+ * Uses the hardcoded map first for reliability, then falls back to an API call.
  */
 async function getProductIDByName(productName: string): Promise<number | null> {
+    const lowerProductName = productName.trim().toLowerCase();
+    
+    // Check the hardcoded map first
+    for (const key in PRODUCT_MAP) {
+        if (key === lowerProductName || PRODUCT_MAP[key].name.toLowerCase() === lowerProductName) {
+            return PRODUCT_MAP[key].id;
+        }
+    }
+    
+    // Fallback to API if not in map
     try {
-        const products = await defectDojoFetchAll<z.infer<typeof ProductSchema>>('products/?limit=1000');
-        const product = products.find(p => p.name.trim().toLowerCase() === productName.trim().toLowerCase());
-        return product ? product.id : null;
+        const products = await defectDojoFetchAll<z.infer<typeof ProductSchema>>(`products/?name__icontains=${encodeURIComponent(lowerProductName)}`);
+        return products.length > 0 ? products[0].id : null;
     } catch (error) {
         console.error(`Error fetching product ID for "${productName}":`, error);
         return null;
@@ -138,8 +148,8 @@ export async function getEngagementList() {
  */
 export async function getToolList() {
     try {
-        const testTypes = await defectDojoFetchAll<z.infer<typeof TestTypeSchema>>('test_types/?limit=1000');
-        return testTypes.map(t => t.name);
+        // Return keys from our reliable map
+        return Object.values(TOOL_ENGAGEMENT_MAP).map(tool => tool.name);
     } catch (error) {
         return { error: error instanceof Error ? error.message : String(error) };
     }
@@ -152,9 +162,10 @@ interface GetFindingsParams {
     limit?: number;
     toolName?: string;
 }
+
 /**
  * Fetches findings from DefectDojo and returns a detailed summary.
- * Correctly filters by product using product ID and/or by tool using a case-insensitive name search.
+ * Correctly filters by product using product ID and/or by tool using a hardcoded engagement ID.
  */
 export async function getFindings(params: GetFindingsParams): Promise<string> {
     try {
@@ -170,6 +181,16 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
             queryParts.push(`limit=${params.limit}`);
         }
 
+        if (params.toolName) {
+            const toolKey = params.toolName.toLowerCase().replace(/ /g, '_');
+            const tool = TOOL_ENGAGEMENT_MAP[toolKey];
+            if (tool) {
+                queryParts.push(`test__engagement=${tool.id}`);
+            } else {
+                 return JSON.stringify({ message: `Tool with name '${params.toolName}' not found.` });
+            }
+        }
+
         if (params.productName) {
             const productId = await getProductIDByName(params.productName);
             if (productId === null) {
@@ -178,11 +199,6 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
             queryParts.push(`test__engagement__product=${productId}`);
         }
        
-        if (params.toolName) {
-            // Use the API's built-in case-insensitive "contains" search for the tool name
-            queryParts.push(`test__test_type__name__icontains=${encodeURIComponent(params.toolName)}`);
-        }
-
         // Prefetch related data to get tool name and product info
         queryParts.push('prefetch=product', 'prefetch=test__test_type');
 
