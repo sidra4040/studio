@@ -148,7 +148,7 @@ export async function getEngagementList() {
  */
 export async function getToolList() {
     try {
-        // Return keys from our reliable map
+        // Return names from our reliable map, ensuring a comprehensive list
         return Object.values(TOOL_ENGAGEMENT_MAP).map(tool => tool.name);
     } catch (error) {
         return { error: error instanceof Error ? error.message : String(error) };
@@ -230,7 +230,7 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
                 severity: f.severity,
                 tool: (f.test && typeof f.test === 'object' && !Array.isArray(f.test) && f.test.test_type?.name) || 'Unknown',
                 description: f.description,
-                mitigation: f.mitigation || 'Not specified.',
+                mitigation: f.mitigation, // Pass as-is (can be null)
             })),
         };
             
@@ -312,6 +312,7 @@ export async function getProductVulnerabilitySummary() {
         const summary: Record<string, any> = {};
 
         const summaryPromises = productList.map(async (productName) => {
+            if (!productName) return;
             const counts = await getVulnerabilityCountBySeverity(productName);
             if (!counts.error) {
                 summary[productName] = counts;
@@ -350,6 +351,7 @@ export async function getTopCriticalVulnerabilityPerProduct(): Promise<string> {
         }
 
         const vulnerabilityPromises = productList.map(async (productName) => {
+             if (!productName) return null;
             const findingResult = await getFindings({ productName, severity: 'Critical', limit: 1 });
             try {
                 const findingsData = JSON.parse(findingResult);
@@ -372,7 +374,7 @@ export async function getTopCriticalVulnerabilityPerProduct(): Promise<string> {
         });
 
         const results = await Promise.all(vulnerabilityPromises);
-        const filteredResults = results.filter(r => r.vulnerability !== null);
+        const filteredResults = results.filter(r => r && r.vulnerability !== null);
 
         if (filteredResults.length === 0) {
             return JSON.stringify({ message: "No critical vulnerabilities found for any product." });
