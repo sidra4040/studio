@@ -97,17 +97,31 @@ async function defectDojoFetch(endpoint: string, options: RequestInit = {}) {
 /**
  * Fetches all results from a paginated DefectDojo endpoint efficiently.
  */
-async function defectDojoFetchAll<T>(endpoint: string): Promise<T[]> {
+async function defectDojoFetchAll<T>(baseUrl: string): Promise<T[]> {
     let results: T[] = [];
-    const limit = 1000; // Fetch 1000 items per page instead of the default 25
-    let nextUrl = endpoint.includes('limit=') ? endpoint : (endpoint.includes('?') ? `${endpoint}&limit=${limit}` : `${endpoint}?limit=${limit}`);
+    let offset = 0;
+    const limit = 1000;
+    let hasMore = true;
 
-    while (nextUrl) {
-        const data = await defectDojoFetch(nextUrl);
-        results = results.concat(data.results);
-        nextUrl = data.next;
+    while (hasMore) {
+        const separator = baseUrl.includes('?') ? '&' : '?';
+        const urlWithPagination = `${baseUrl}${separator}limit=${limit}&offset=${offset}`;
+        
+        const data = await defectDojoFetch(urlWithPagination);
+        
+        const batch = data.results as T[];
+        if (batch && batch.length > 0) {
+            results = results.concat(batch);
+            offset += limit;
+        } else {
+            hasMore = false;
+        }
+
+        // Stop if the API indicates no more pages or returns a batch smaller than the limit
+        if (!data.next || (batch && batch.length < limit)) {
+            hasMore = false;
+        }
     }
-
     return results;
 }
 
@@ -179,7 +193,7 @@ async function getProductIDByName(productName: string): Promise<number | null> {
  */
 export async function getProductList() {
     try {
-        const products = await defectDojoFetchAll<z.infer<typeof ProductSchema>>('products/?limit=1000');
+        const products = await defectDojoFetchAll<z.infer<typeof ProductSchema>>('products/');
         return products.map(p => p.name);
     } catch (error) {
         return { error: error instanceof Error ? error.message : String(error) };
@@ -548,7 +562,3 @@ export async function getTopRiskyComponents(limit: number = 5) {
         return { error: `Failed to analyze top risky components. Details: ${errorMessage}` };
     }
 }
-
-    
-
-    
