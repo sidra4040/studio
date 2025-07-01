@@ -434,6 +434,7 @@ export async function getComponentImpact(componentName: string) {
                 criticalCount: 0,
                 highCount: 0,
                 riskReductionPercent: 0,
+                sampleVulnerabilities: [],
                 message: `No vulnerabilities found for component '${componentName}'.`
             };
         }
@@ -449,6 +450,20 @@ export async function getComponentImpact(componentName: string) {
             if (finding.severity === 'High') highCount++;
         });
 
+        // Get top 5 critical vulnerabilities
+        const topCriticalVulnerabilities = componentFindings
+            .filter(f => f.severity === 'Critical')
+            .sort((a, b) => cvssToNumber(b.cvssv3_score) - cvssToNumber(a.cvssv3_score))
+            .slice(0, 5)
+            .map(f => ({
+                id: f.id,
+                title: f.title,
+                severity: f.severity,
+                cve: f.cve || 'N/A',
+                cvssv3_score: f.cvssv3_score || 'N/A',
+                cwe: f.cwe ? `CWE-${f.cwe}` : 'Unknown',
+            }));
+
         // 5. Calculate risk reduction
         const riskReductionPercent = totalRisk > 0 ? (componentRisk / totalRisk) * 100 : 0;
 
@@ -458,7 +473,8 @@ export async function getComponentImpact(componentName: string) {
             vulnerabilityCount: componentFindings.length,
             criticalCount,
             highCount,
-            riskReductionPercent: parseFloat(riskReductionPercent.toFixed(1)), // Round to one decimal place
+            riskReductionPercent: parseFloat(riskReductionPercent.toFixed(1)),
+            sampleVulnerabilities: topCriticalVulnerabilities,
         };
 
         console.log("Component impact analysis result:", result);
