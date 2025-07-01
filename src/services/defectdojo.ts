@@ -59,7 +59,7 @@ const FindingListSchema = z.object({
     results: z.array(FindingSchema),
 });
 
-// A simple in-memory cache for findings to improve performance
+// A simple in-memory cache for findings to improve performance for full-dataset analysis
 const findingsCache = {
     findings: [] as z.infer<typeof FindingSchema>[],
     lastFetched: 0,
@@ -99,7 +99,7 @@ async function defectDojoFetch(endpoint: string, options: RequestInit = {}) {
  */
 async function defectDojoFetchAll<T>(endpoint: string): Promise<T[]> {
     let results: T[] = [];
-    const limit = 100; // Fetch 100 items per page instead of the default 25
+    const limit = 1000; // Fetch 1000 items per page instead of the default 25
     let nextUrl = endpoint.includes('limit=') ? endpoint : (endpoint.includes('?') ? `${endpoint}&limit=${limit}` : `${endpoint}?limit=${limit}`);
 
     while (nextUrl) {
@@ -112,32 +112,29 @@ async function defectDojoFetchAll<T>(endpoint: string): Promise<T[]> {
 }
 
 /**
- * Fetches all active findings, using a cache to avoid repeated API calls.
- * Prefetches related data to enable in-memory filtering.
+ * Fetches all active findings for broad analysis, using a cache to avoid repeated API calls.
  */
 async function getCachedAllFindings(): Promise<z.infer<typeof FindingSchema>[]> {
     const now = Date.now();
     if (findingsCache.findings.length > 0 && now - findingsCache.lastFetched < findingsCache.ttl) {
-        console.log(`Returning ${findingsCache.findings.length} findings from cache.`);
+        console.log(`Returning ${findingsCache.findings.length} findings from cache for analysis.`);
         return findingsCache.findings;
     }
 
-    console.log("Cache is stale or empty. Fetching fresh findings from API.");
+    console.log("Cache is stale or empty for analysis. Fetching fresh findings from API.");
     // Add prefetching to get all necessary data for filtering in memory
     const endpoint = 'findings/?active=true&duplicate=false&prefetch=test__engagement__product,test__test_type';
     const findings = await defectDojoFetchAll<z.infer<typeof FindingSchema>>(endpoint);
     
-    // Validate findings against the schema
     const parsedFindings = z.array(FindingSchema).safeParse(findings);
     if (!parsedFindings.success) {
         console.error("Failed to parse cached findings:", parsedFindings.error.toString());
-        // Return empty or handle error, to prevent caching bad data
         return []; 
     }
 
     findingsCache.findings = parsedFindings.data;
     findingsCache.lastFetched = now;
-    console.log(`Cached ${findings.length} findings.`);
+    console.log(`Cached ${findings.length} findings for analysis.`);
     return findingsCache.findings;
 }
 
@@ -158,7 +155,6 @@ function cvssToNumber(score: string | number | null | undefined): number {
 
 /**
  * Finds a product by name (case-insensitive) and returns its ID.
- * Uses the hardcoded map first for reliability, then falls back to an API call.
  */
 async function getProductIDByName(productName: string): Promise<number | null> {
     const lowerProductName = productName.trim().toLowerCase();
@@ -190,17 +186,6 @@ export async function getProductList() {
     }
 }
 
-/**
- * Gets a list of all engagements from DefectDojo.
- */
-export async function getEngagementList() {
-    try {
-        const engagements = await defectDojoFetchAll<z.infer<typeof EngagementSchema>>('engagements/?limit=1000');
-        return engagements.map(e => e.name);
-    } catch (error) {
-        return { error: error instanceof Error ? error.message : String(error) };
-    }
-}
 
 /**
  * Gets a list of all tools (test types) from DefectDojo.
@@ -222,55 +207,57 @@ interface GetFindingsParams {
 }
 
 /**
- * Fetches findings by filtering the cached data in-memory.
+ * Fetches findings using a direct, filtered API call for performance. Does not use the full cache.
  */
 export async function getFindings(params: GetFindingsParams): Promise<string> {
     try {
-        // 1. Get all findings from the cache (fast after first call)
-        let allFindings = await getCachedAllFindings();
-
-        // 2. Filter in memory
-        if (params.productName) {
-            const lowerProductName = params.productName.toLowerCase().trim();
-            allFindings = allFindings.filter(f => 
-                f.test?.engagement?.product?.name?.toLowerCase().trim() === lowerProductName
-            );
-        }
+        const queryParams = new URLSearchParams();
+        queryParams.set('duplicate', 'false');
+        queryParams.set('active', params.active !== undefined ? String(params.active) : 'true');
 
         if (params.severity) {
-            allFindings = allFindings.filter(f => f.severity === params.severity);
+            queryParams.set('severity', params.severity);
         }
-
-        if (params.active !== undefined) {
-            allFindings = allFindings.filter(f => f.active === params.active);
+        if (params.limit) {
+            queryParams.set('limit', String(params.limit));
         }
 
         if (params.toolName) {
             const lowerToolName = params.toolName.toLowerCase().trim();
-            // Use `includes` for flexible matching, e.g., "rapid7" matches "Nexpose (Rapid7) Carelink"
-            allFindings = allFindings.filter(f => 
-                f.test?.test_type?.name?.toLowerCase().includes(lowerToolName)
-            );
+            const toolKey = Object.keys(TOOL_ENGAGEMENT_MAP).find(key => key.includes(lowerToolName));
+            const tool = toolKey ? TOOL_ENGAGEMENT_MAP[toolKey] : null;
+            
+            if (tool) {
+                queryParams.set('test__engagement', String(tool.id));
+            } else {
+                 return JSON.stringify({ message: `Tool '${params.toolName}' not found.` });
+            }
+        } else if (params.productName) {
+            const productId = await getProductIDByName(params.productName);
+            if (productId) {
+                queryParams.set('test__engagement__product', String(productId));
+            } else {
+                return JSON.stringify({ message: `Product '${params.productName}' not found.` });
+            }
         }
-        
-        const totalCount = allFindings.length;
-        const limit = params.limit || 10;
-        
-        // Sort by CVSS score before slicing
-        const sortedFindings = allFindings.sort((a, b) => cvssToNumber(b.cvssv3_score) - cvssToNumber(a.cvssv3_score));
-        const limitedFindings = sortedFindings.slice(0, limit);
 
-        if (limitedFindings.length === 0) {
-             const message = `No active ${params.severity || ''} vulnerabilities were found for the specified criteria.`;
-            return JSON.stringify({ message });
-        }
+        queryParams.set('prefetch', 'test__engagement__product,test__test_type');
         
-        const summary = {
-            totalCount: totalCount,
-            showing: limitedFindings.length,
+        const data = await defectDojoFetch(`findings/?${queryParams.toString()}`);
+        
+        const parsedFindings = FindingListSchema.safeParse(data);
+
+        if (!parsedFindings.success || parsedFindings.data.results.length === 0) {
+            const criteria = [params.severity, params.productName, params.toolName].filter(Boolean).join(', ');
+            return JSON.stringify({ message: `No active vulnerabilities were found for the specified criteria: ${criteria}.` });
+        }
+
+        const responseData = {
+            totalCount: parsedFindings.data.count,
+            showing: parsedFindings.data.results.length,
             toolName: params.toolName || 'All Tools',
             productName: params.productName || 'All Products',
-            findings: limitedFindings.map(f => ({
+            findings: parsedFindings.data.results.map(f => ({
                 id: f.id,
                 title: f.title,
                 cve: f.cve || 'N/A',
@@ -282,8 +269,8 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
                 mitigation: f.mitigation,
             })),
         };
-            
-        return JSON.stringify(summary, null, 2);
+        
+        return JSON.stringify(responseData, null, 2);
 
     } catch (error) {
         console.error('Error in getFindings:', error);
@@ -291,6 +278,7 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
         return JSON.stringify({ error: `An exception occurred. Details: ${errorMessage}` });
     }
 }
+
 
 /**
  * Gets vulnerability counts by severity for a specific product.
@@ -300,22 +288,18 @@ export async function getVulnerabilityCountBySeverity(productName: string) {
     const counts: Record<string, number> = {};
     
     try {
-        const allFindings = await getCachedAllFindings();
-        const lowerProductName = productName.toLowerCase().trim();
-        const productFindings = allFindings.filter(f => 
-            f.test?.engagement?.product?.name?.toLowerCase().trim() === lowerProductName
-        );
-
-        if (productFindings.length === 0 && !(await getProductIDByName(productName))) {
-             return { error: `Product '${productName}' not found.` };
+        const productId = await getProductIDByName(productName);
+        if (!productId) {
+            return { error: `Product '${productName}' not found.` };
         }
 
         let total = 0;
-        severities.forEach(severity => {
-            const count = productFindings.filter(f => f.severity === severity).length;
+        for (const severity of severities) {
+            const data = await defectDojoFetch(`findings/?test__engagement__product=${productId}&severity=${severity}&active=true&duplicate=false&limit=1`);
+            const count = FindingCountSchema.parse(data).count;
             counts[severity] = count;
             total += count;
-        });
+        }
 
         counts['Total'] = total;
         
@@ -328,7 +312,6 @@ export async function getVulnerabilityCountBySeverity(productName: string) {
 
 export async function getOpenVsClosedCounts() {
     try {
-        // This can also be optimized by using the cache if it contains both active and inactive
         const openData = await defectDojoFetch(`findings/?active=true&duplicate=false&limit=1`);
         const closedData = await defectDojoFetch(`findings/?active=false&duplicate=false&limit=1`);
         
@@ -352,10 +335,16 @@ export async function getProductVulnerabilitySummary() {
 
         for (const productName of productList) {
             if (!productName) continue;
-            const counts = await getVulnerabilityCountBySeverity(productName);
-            if (!counts.error) {
-                summary[productName] = counts;
-            }
+            // Use in-memory filtering for summary to avoid hammering the API
+            const productFindings = allFindings.filter(f => f.test?.engagement?.product?.name === productName);
+            const counts: Record<string, number> = { Critical: 0, High: 0, Medium: 0, Low: 0, Info: 0, Total: 0 };
+            productFindings.forEach(f => {
+                if (counts[f.severity] !== undefined) {
+                    counts[f.severity]++;
+                }
+                counts.Total++;
+            });
+            summary[productName] = counts;
         }
 
         console.log("Finished calculating product vulnerability summary.");
@@ -559,5 +548,7 @@ export async function getTopRiskyComponents(limit: number = 5) {
         return { error: `Failed to analyze top risky components. Details: ${errorMessage}` };
     }
 }
+
+    
 
     
