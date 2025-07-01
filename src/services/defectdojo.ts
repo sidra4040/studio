@@ -233,7 +233,7 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
         if (params.productName) {
             const lowerProductName = params.productName.toLowerCase().trim();
             allFindings = allFindings.filter(f => 
-                f.test?.engagement?.product?.name?.toLowerCase() === lowerProductName
+                f.test?.engagement?.product?.name?.toLowerCase().trim() === lowerProductName
             );
         }
 
@@ -299,26 +299,24 @@ export async function getVulnerabilityCountBySeverity(productName: string) {
     const severities = ['Critical', 'High', 'Medium', 'Low', 'Info'];
     const counts: Record<string, number> = {};
     
-    const productId = await getProductIDByName(productName);
-    if (productId === null) {
-        return { error: `Product '${productName}' not found.` };
-    }
-    const productFilter = `&test__engagement__product=${productId}&duplicate=false`;
-
     try {
-        const countPromises = severities.map(async (severity) => {
-            const data = await defectDojoFetch(`findings/?severity=${severity}&active=true&limit=1${productFilter}`);
-            const parsedData = FindingCountSchema.parse(data);
-            return { severity, count: parsedData.count };
+        const allFindings = await getCachedAllFindings();
+        const lowerProductName = productName.toLowerCase().trim();
+        const productFindings = allFindings.filter(f => 
+            f.test?.engagement?.product?.name?.toLowerCase().trim() === lowerProductName
+        );
+
+        if (productFindings.length === 0 && !(await getProductIDByName(productName))) {
+             return { error: `Product '${productName}' not found.` };
+        }
+
+        let total = 0;
+        severities.forEach(severity => {
+            const count = productFindings.filter(f => f.severity === severity).length;
+            counts[severity] = count;
+            total += count;
         });
 
-        const results = await Promise.all(countPromises);
-        
-        let total = 0;
-        for (const result of results) {
-            counts[result.severity] = result.count;
-            total += result.count;
-        }
         counts['Total'] = total;
         
         return counts;
@@ -330,6 +328,7 @@ export async function getVulnerabilityCountBySeverity(productName: string) {
 
 export async function getOpenVsClosedCounts() {
     try {
+        // This can also be optimized by using the cache if it contains both active and inactive
         const openData = await defectDojoFetch(`findings/?active=true&duplicate=false&limit=1`);
         const closedData = await defectDojoFetch(`findings/?active=false&duplicate=false&limit=1`);
         
@@ -346,22 +345,18 @@ export async function getOpenVsClosedCounts() {
 export async function getProductVulnerabilitySummary() {
     console.log("Fetching efficient product vulnerability summary...");
     try {
-        const productList = await getProductList();
-        if (!Array.isArray(productList)) {
-            throw new Error("Could not fetch product list.");
-        }
+        const allFindings = await getCachedAllFindings();
+        const productList = [...new Set(allFindings.map(f => f.test?.engagement?.product?.name).filter(p => p))];
 
         const summary: Record<string, any> = {};
 
-        const summaryPromises = productList.map(async (productName) => {
-            if (!productName) return;
+        for (const productName of productList) {
+            if (!productName) continue;
             const counts = await getVulnerabilityCountBySeverity(productName);
             if (!counts.error) {
                 summary[productName] = counts;
             }
-        });
-
-        await Promise.all(summaryPromises);
+        }
 
         console.log("Finished calculating product vulnerability summary.");
         return summary;
@@ -384,42 +379,37 @@ export async function getTotalFindingCount() {
 export async function getTopCriticalVulnerabilityPerProduct(): Promise<string> {
     console.log("Fetching top critical vulnerability for each product...");
     try {
-        const productList = await getProductList();
-        if (!Array.isArray(productList) || productList.length === 0) {
-            return JSON.stringify({ message: "No products found to analyze." });
-        }
+        const allFindings = await getCachedAllFindings();
+        const criticalFindings = allFindings.filter(f => f.severity === 'Critical');
+        
+        const vulnerabilitiesByProduct = criticalFindings.reduce((acc, f) => {
+            const productName = f.test?.engagement?.product?.name;
+            if (!productName) return acc;
 
-        const vulnerabilityPromises = productList.map(async (productName) => {
-             if (!productName) return null;
-            const findingResult = await getFindings({ productName, severity: 'Critical', limit: 1 });
-            try {
-                const findingsData = JSON.parse(findingResult);
-                if (findingsData.findings && findingsData.findings.length > 0) {
-                    return {
-                        product: productName,
-                        vulnerability: findingsData.findings[0],
-                    };
-                }
-                return {
-                    product: productName,
-                    vulnerability: null,
-                };
-            } catch (e) {
-                return {
-                    product: productName,
-                    vulnerability: null,
-                };
+            const currentVulnerability = acc[productName];
+            const newVulnerability = {
+                id: f.id,
+                title: f.title,
+                cve: f.cve || 'N/A',
+                cwe: f.cwe ? `CWE-${f.cwe}` : 'Unknown',
+                cvssv3_score: f.cvssv3_score || 'N/A',
+                severity: f.severity,
+            };
+
+            if (!currentVulnerability || cvssToNumber(f.cvssv3_score) > cvssToNumber(currentVulnerability.vulnerability.cvssv3_score)) {
+                acc[productName] = { product: productName, vulnerability: newVulnerability };
             }
-        });
+            
+            return acc;
+        }, {} as Record<string, { product: string; vulnerability: any }>);
 
-        const results = await Promise.all(vulnerabilityPromises);
-        const filteredResults = results.filter(r => r && r.vulnerability !== null);
+        const results = Object.values(vulnerabilitiesByProduct);
 
-        if (filteredResults.length === 0) {
+        if (results.length === 0) {
             return JSON.stringify({ message: "No critical vulnerabilities found for any product." });
         }
         
-        return JSON.stringify({ vulnerabilitiesByProduct: filteredResults }, null, 2);
+        return JSON.stringify({ vulnerabilitiesByProduct: results }, null, 2);
 
     } catch (error) {
         console.error("Error in getTopCriticalVulnerabilityPerProduct:", error);
