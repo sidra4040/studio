@@ -152,3 +152,23 @@ export const PRODUCT_MAP: Record<string, { id: number; name: string }> = {
   smart_sync: { id: 12, name: 'Smart Sync' },
   smart_sync_base: { id: 13, name: 'Smart Sync Base' },
 };
+
+export const KNOWN_COMPONENTS: string[] = [
+    "openssl",
+    "libxml2",
+    "log4j",
+    "spring-core",
+    "jackson-databind",
+    "libpng",
+    "curl",
+    "nginx",
+    "apache",
+    "jquery",
+    "lodash",
+    "express",
+    "python",
+    "django",
+    "go",
+    "wolfssl",
+    "libtommath"
+];

@@ -2,7 +2,7 @@
 'use server';
 
 import { z } from 'zod';
-import { TOOL_ENGAGEMENT_MAP, PRODUCT_MAP } from './defectdojo-maps';
+import { TOOL_ENGAGEMENT_MAP, PRODUCT_MAP, KNOWN_COMPONENTS } from './defectdojo-maps';
 
 
 const API_URL = process.env.DEFECTDOJO_API_URL;
@@ -94,6 +94,19 @@ async function defectDojoFetchAll<T>(endpoint: string): Promise<T[]> {
     return results;
 }
 
+/**
+ * Helper to safely convert CVSS to a number
+ */
+function cvssToNumber(score: string | number | null | undefined): number {
+    if (typeof score === 'number') {
+        return score;
+    }
+    if (typeof score === 'string') {
+        const num = parseFloat(score);
+        return isNaN(num) ? 0 : num;
+    }
+    return 0;
+}
 
 /**
  * Finds a product by name (case-insensitive) and returns its ID.
@@ -386,5 +399,148 @@ export async function getTopCriticalVulnerabilityPerProduct(): Promise<string> {
         console.error("Error in getTopCriticalVulnerabilityPerProduct:", error);
         const errorMessage = error instanceof Error ? error.message : String(error);
         return JSON.stringify({ error: `An exception occurred: ${errorMessage}` });
+    }
+}
+
+/**
+ * Analyzes the impact of fixing all vulnerabilities for a specific component.
+ */
+export async function getComponentImpact(componentName: string) {
+    console.log(`Analyzing component impact for: ${componentName}`);
+    try {
+        // 1. Fetch all active findings to establish a baseline
+        const allFindingsData = await defectDojoFetchAll<z.infer<typeof FindingSchema>>('findings/?active=true&duplicate=false');
+        
+        if (!allFindingsData || allFindingsData.length === 0) {
+            return { error: 'No active findings found to analyze.' };
+        }
+
+        // 2. Calculate total risk baseline
+        let totalRisk = 0;
+        allFindingsData.forEach(finding => {
+            totalRisk += cvssToNumber(finding.cvssv3_score);
+        });
+
+        // 3. Filter findings for the specific component (case-insensitive)
+        const componentPattern = new RegExp(componentName, 'i');
+        const componentFindings = allFindingsData.filter(finding => 
+            componentPattern.test(finding.title) || (finding.description && componentPattern.test(finding.description))
+        );
+
+        if (componentFindings.length === 0) {
+            return {
+                componentName,
+                vulnerabilityCount: 0,
+                criticalCount: 0,
+                highCount: 0,
+                riskReductionPercent: 0,
+                message: `No vulnerabilities found for component '${componentName}'.`
+            };
+        }
+
+        // 4. Calculate metrics for the component
+        let componentRisk = 0;
+        let criticalCount = 0;
+        let highCount = 0;
+
+        componentFindings.forEach(finding => {
+            componentRisk += cvssToNumber(finding.cvssv3_score);
+            if (finding.severity === 'Critical') criticalCount++;
+            if (finding.severity === 'High') highCount++;
+        });
+
+        // 5. Calculate risk reduction
+        const riskReductionPercent = totalRisk > 0 ? (componentRisk / totalRisk) * 100 : 0;
+
+        // 6. Return the analysis
+        const result = {
+            componentName,
+            vulnerabilityCount: componentFindings.length,
+            criticalCount,
+            highCount,
+            riskReductionPercent: parseFloat(riskReductionPercent.toFixed(1)), // Round to one decimal place
+        };
+
+        console.log("Component impact analysis result:", result);
+        return result;
+
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        console.error(`Error analyzing component impact for ${componentName}:`, errorMessage);
+        return { error: `Failed to analyze component impact. Details: ${errorMessage}` };
+    }
+}
+
+/**
+ * Identifies the top N riskiest components based on their contribution to the total CVSS score.
+ */
+export async function getTopRiskyComponents(limit: number = 5) {
+    console.log(`Analyzing top ${limit} risky components...`);
+    try {
+        // 1. Fetch all active findings
+        const allFindingsData = await defectDojoFetchAll<z.infer<typeof FindingSchema>>('findings/?active=true&duplicate=false');
+        
+        if (!allFindingsData || allFindingsData.length === 0) {
+            return { error: 'No active findings found to analyze.' };
+        }
+
+        // 2. Calculate total risk baseline
+        let totalRisk = 0;
+        allFindingsData.forEach(finding => {
+            totalRisk += cvssToNumber(finding.cvssv3_score);
+        });
+        
+        if (totalRisk === 0) {
+            return {
+                topComponents: [],
+                message: 'No vulnerabilities with CVSS scores found. Cannot calculate risk.'
+            };
+        }
+
+        // 3. Analyze each known component
+        const componentAnalyses = [];
+        for (const componentName of KNOWN_COMPONENTS) {
+            const componentPattern = new RegExp(componentName, 'i');
+            const componentFindings = allFindingsData.filter(finding => 
+                componentPattern.test(finding.title) || (finding.description && componentPattern.test(finding.description))
+            );
+
+            if (componentFindings.length > 0) {
+                let componentRisk = 0;
+                let criticalCount = 0;
+                let highCount = 0;
+
+                componentFindings.forEach(finding => {
+                    componentRisk += cvssToNumber(finding.cvssv3_score);
+                    if (finding.severity === 'Critical') criticalCount++;
+                    if (finding.severity === 'High') highCount++;
+                });
+
+                const riskReductionPercent = (componentRisk / totalRisk) * 100;
+
+                componentAnalyses.push({
+                    componentName,
+                    vulnerabilityCount: componentFindings.length,
+                    criticalCount,
+                    highCount,
+                    riskReductionPercent: parseFloat(riskReductionPercent.toFixed(1)),
+                });
+            }
+        }
+        
+        // 4. Sort by risk and return top N
+        const sortedComponents = componentAnalyses.sort((a, b) => b.riskReductionPercent - a.riskReductionPercent);
+        
+        const result = {
+            topComponents: sortedComponents.slice(0, limit)
+        };
+        
+        console.log("Top risky components analysis result:", result);
+        return result;
+
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        console.error(`Error analyzing top risky components:`, errorMessage);
+        return { error: `Failed to analyze top risky components. Details: ${errorMessage}` };
     }
 }
