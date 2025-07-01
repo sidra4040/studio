@@ -51,6 +51,14 @@ const FindingListSchema = z.object({
     results: z.array(FindingSchema),
 });
 
+// A simple in-memory cache for findings to improve performance
+const findingsCache = {
+    findings: [] as z.infer<typeof FindingSchema>[],
+    lastFetched: 0,
+    ttl: 5 * 60 * 1000, // 5 minute cache
+};
+
+
 // A helper to make authenticated requests to the DefectDojo API
 async function defectDojoFetch(endpoint: string, options: RequestInit = {}) {
     if (!API_URL || !API_KEY) {
@@ -93,6 +101,25 @@ async function defectDojoFetchAll<T>(endpoint: string): Promise<T[]> {
 
     return results;
 }
+
+/**
+ * Fetches all active findings, using a cache to avoid repeated API calls.
+ */
+async function getCachedAllFindings(): Promise<z.infer<typeof FindingSchema>[]> {
+    const now = Date.now();
+    if (findingsCache.findings.length > 0 && now - findingsCache.lastFetched < findingsCache.ttl) {
+        console.log(`Returning ${findingsCache.findings.length} findings from cache.`);
+        return findingsCache.findings;
+    }
+
+    console.log("Cache is stale or empty. Fetching fresh findings from API.");
+    const findings = await defectDojoFetchAll<z.infer<typeof FindingSchema>>('findings/?active=true&duplicate=false');
+    findingsCache.findings = findings;
+    findingsCache.lastFetched = now;
+    console.log(`Cached ${findings.length} findings.`);
+    return findings;
+}
+
 
 /**
  * Helper to safely convert CVSS to a number
@@ -195,8 +222,8 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
         }
 
         if (params.toolName) {
-            const toolKey = params.toolName.toLowerCase().replace(/ /g, '_');
-            const tool = TOOL_ENGAGEMENT_MAP[toolKey];
+            const lowerToolName = params.toolName.toLowerCase().replace(/ /g, '_');
+            const tool = Object.values(TOOL_ENGAGEMENT_MAP).find(t => t.name.toLowerCase().includes(lowerToolName));
             if (tool) {
                 queryParts.push(`test__engagement=${tool.id}`);
             } else {
@@ -408,8 +435,8 @@ export async function getTopCriticalVulnerabilityPerProduct(): Promise<string> {
 export async function getComponentImpact(componentName: string) {
     console.log(`Analyzing component impact for: ${componentName}`);
     try {
-        // 1. Fetch all active findings to establish a baseline
-        const allFindingsData = await defectDojoFetchAll<z.infer<typeof FindingSchema>>('findings/?active=true&duplicate=false');
+        // 1. Fetch all active findings from cache to establish a baseline
+        const allFindingsData = await getCachedAllFindings();
         
         if (!allFindingsData || allFindingsData.length === 0) {
             return { error: 'No active findings found to analyze.' };
@@ -493,8 +520,8 @@ export async function getComponentImpact(componentName: string) {
 export async function getTopRiskyComponents(limit: number = 5) {
     console.log(`Analyzing top ${limit} risky components...`);
     try {
-        // 1. Fetch all active findings
-        const allFindingsData = await defectDojoFetchAll<z.infer<typeof FindingSchema>>('findings/?active=true&duplicate=false');
+        // 1. Fetch all active findings from cache
+        const allFindingsData = await getCachedAllFindings();
         
         if (!allFindingsData || allFindingsData.length === 0) {
             return { error: 'No active findings found to analyze.' };
