@@ -28,6 +28,7 @@ const FindingCountSchema = z.object({
     count: z.number(),
 });
 
+// A more detailed schema to handle prefetched data for in-memory filtering
 const FindingSchema = z.object({
     id: z.number(),
     title: z.string(),
@@ -35,14 +36,21 @@ const FindingSchema = z.object({
     description: z.string(),
     mitigation: z.string().nullable().optional(),
     active: z.boolean(),
-    product: z.object({
-        id: z.number(),
-        name: z.string(),
-    }).optional(), // For prefetched data
     cwe: z.number().nullable(),
     cve: z.string().nullable().optional(),
     cvssv3_score: z.union([z.string(), z.number()]).nullable().optional(),
-    test: z.any().optional(),
+    test: z.object({
+        id: z.number(),
+        test_type: z.object({ 
+            id: z.number(),
+            name: z.string() 
+        }).optional(),
+        engagement: z.object({ 
+            id: z.number(),
+            name: z.string(),
+            product: z.object({ id: z.number(), name: z.string() })
+        }).optional(),
+    }).optional(),
 });
 
 const FindingListSchema = z.object({
@@ -87,11 +95,12 @@ async function defectDojoFetch(endpoint: string, options: RequestInit = {}) {
 }
 
 /**
- * Fetches all results from a paginated DefectDojo endpoint.
+ * Fetches all results from a paginated DefectDojo endpoint efficiently.
  */
 async function defectDojoFetchAll<T>(endpoint: string): Promise<T[]> {
     let results: T[] = [];
-    let nextUrl: string | null = endpoint;
+    const limit = 100; // Fetch 100 items per page instead of the default 25
+    let nextUrl = endpoint.includes('limit=') ? endpoint : (endpoint.includes('?') ? `${endpoint}&limit=${limit}` : `${endpoint}?limit=${limit}`);
 
     while (nextUrl) {
         const data = await defectDojoFetch(nextUrl);
@@ -104,6 +113,7 @@ async function defectDojoFetchAll<T>(endpoint: string): Promise<T[]> {
 
 /**
  * Fetches all active findings, using a cache to avoid repeated API calls.
+ * Prefetches related data to enable in-memory filtering.
  */
 async function getCachedAllFindings(): Promise<z.infer<typeof FindingSchema>[]> {
     const now = Date.now();
@@ -113,11 +123,22 @@ async function getCachedAllFindings(): Promise<z.infer<typeof FindingSchema>[]> 
     }
 
     console.log("Cache is stale or empty. Fetching fresh findings from API.");
-    const findings = await defectDojoFetchAll<z.infer<typeof FindingSchema>>('findings/?active=true&duplicate=false');
-    findingsCache.findings = findings;
+    // Add prefetching to get all necessary data for filtering in memory
+    const endpoint = 'findings/?active=true&duplicate=false&prefetch=test__engagement__product,test__test_type';
+    const findings = await defectDojoFetchAll<z.infer<typeof FindingSchema>>(endpoint);
+    
+    // Validate findings against the schema
+    const parsedFindings = z.array(FindingSchema).safeParse(findings);
+    if (!parsedFindings.success) {
+        console.error("Failed to parse cached findings:", parsedFindings.error.toString());
+        // Return empty or handle error, to prevent caching bad data
+        return []; 
+    }
+
+    findingsCache.findings = parsedFindings.data;
     findingsCache.lastFetched = now;
     console.log(`Cached ${findings.length} findings.`);
-    return findings;
+    return findingsCache.findings;
 }
 
 
@@ -142,14 +163,12 @@ function cvssToNumber(score: string | number | null | undefined): number {
 async function getProductIDByName(productName: string): Promise<number | null> {
     const lowerProductName = productName.trim().toLowerCase();
     
-    // Check the hardcoded map first
     for (const key in PRODUCT_MAP) {
         if (key === lowerProductName || PRODUCT_MAP[key].name.toLowerCase() === lowerProductName) {
             return PRODUCT_MAP[key].id;
         }
     }
     
-    // Fallback to API if not in map
     try {
         const products = await defectDojoFetchAll<z.infer<typeof ProductSchema>>(`products/?name__icontains=${encodeURIComponent(lowerProductName)}`);
         return products.length > 0 ? products[0].id : null;
@@ -188,7 +207,6 @@ export async function getEngagementList() {
  */
 export async function getToolList() {
     try {
-        // Return names from our reliable map, ensuring a comprehensive list
         return Object.values(TOOL_ENGAGEMENT_MAP).map(tool => tool.name);
     } catch (error) {
         return { error: error instanceof Error ? error.message : String(error) };
@@ -204,87 +222,78 @@ interface GetFindingsParams {
 }
 
 /**
- * Fetches findings from DefectDojo and returns a detailed summary.
- * Correctly filters by product using product ID and/or by tool using a hardcoded engagement ID.
+ * Fetches findings by filtering the cached data in-memory.
  */
 export async function getFindings(params: GetFindingsParams): Promise<string> {
     try {
-        const queryParts: string[] = [`duplicate=false`];
-        
-        if (params.active !== undefined) {
-            queryParts.push(`active=${params.active}`);
+        // 1. Get all findings from the cache (fast after first call)
+        let allFindings = await getCachedAllFindings();
+
+        // 2. Filter in memory
+        if (params.productName) {
+            const lowerProductName = params.productName.toLowerCase().trim();
+            allFindings = allFindings.filter(f => 
+                f.test?.engagement?.product?.name?.toLowerCase() === lowerProductName
+            );
         }
+
         if (params.severity) {
-            queryParts.push(`severity=${params.severity}`);
+            allFindings = allFindings.filter(f => f.severity === params.severity);
         }
-        if (params.limit) {
-            queryParts.push(`limit=${params.limit}`);
+
+        if (params.active !== undefined) {
+            allFindings = allFindings.filter(f => f.active === params.active);
         }
 
         if (params.toolName) {
-            const lowerToolName = params.toolName.toLowerCase().replace(/ /g, '_');
-            const tool = Object.values(TOOL_ENGAGEMENT_MAP).find(t => t.name.toLowerCase().includes(lowerToolName));
-            if (tool) {
-                queryParts.push(`test__engagement=${tool.id}`);
-            } else {
-                 return JSON.stringify({ message: `Tool with name '${params.toolName}' not found.` });
-            }
+            const lowerToolName = params.toolName.toLowerCase().trim();
+            // Use `includes` for flexible matching, e.g., "rapid7" matches "Nexpose (Rapid7) Carelink"
+            allFindings = allFindings.filter(f => 
+                f.test?.test_type?.name?.toLowerCase().includes(lowerToolName)
+            );
         }
+        
+        const totalCount = allFindings.length;
+        const limit = params.limit || 10;
+        
+        // Sort by CVSS score before slicing
+        const sortedFindings = allFindings.sort((a, b) => cvssToNumber(b.cvssv3_score) - cvssToNumber(a.cvssv3_score));
+        const limitedFindings = sortedFindings.slice(0, limit);
 
-        if (params.productName) {
-            const productId = await getProductIDByName(params.productName);
-            if (productId === null) {
-                return JSON.stringify({ message: `Product with name '${params.productName}' not found.` });
-            }
-            queryParts.push(`test__engagement__product=${productId}`);
-        }
-       
-        // Prefetch related data to get tool name and product info
-        queryParts.push('prefetch=product', 'prefetch=test__test_type');
-
-        const queryParams = queryParts.join('&');
-        const data = await defectDojoFetch(`findings/?${queryParams}`);
-        const parsedData = FindingListSchema.safeParse(data);
-
-        if (!parsedData.success) {
-            console.error('Failed to parse DefectDojo API findings response:', parsedData.error);
-            return JSON.stringify({ error: 'Invalid data structure received from DefectDojo API.' });
-        }
-
-        if (parsedData.data.results.length === 0) {
+        if (limitedFindings.length === 0) {
              const message = `No active ${params.severity || ''} vulnerabilities were found for the specified criteria.`;
             return JSON.stringify({ message });
         }
         
         const summary = {
-            totalCount: parsedData.data.count,
-            showing: parsedData.data.results.length,
+            totalCount: totalCount,
+            showing: limitedFindings.length,
             toolName: params.toolName || 'All Tools',
             productName: params.productName || 'All Products',
-            findings: parsedData.data.results.map(f => ({
+            findings: limitedFindings.map(f => ({
                 id: f.id,
                 title: f.title,
                 cve: f.cve || 'N/A',
                 cwe: f.cwe ? `CWE-${f.cwe}` : 'Unknown',
                 cvssv3_score: f.cvssv3_score || 'N/A',
                 severity: f.severity,
-                tool: (f.test && typeof f.test === 'object' && !Array.isArray(f.test) && f.test.test_type?.name) || 'Unknown',
+                tool: f.test?.test_type?.name || 'Unknown',
                 description: f.description,
-                mitigation: f.mitigation, // Pass as-is (can be null)
+                mitigation: f.mitigation,
             })),
         };
             
         return JSON.stringify(summary, null, 2);
+
     } catch (error) {
-        console.error('Error calling DefectDojo API for findings:', error);
+        console.error('Error in getFindings:', error);
         const errorMessage = error instanceof Error ? error.message : String(error);
-        return JSON.stringify({ error: `An exception occurred while contacting DefectDojo. Details: ${errorMessage}` });
+        return JSON.stringify({ error: `An exception occurred. Details: ${errorMessage}` });
     }
 }
 
 /**
  * Gets vulnerability counts by severity for a specific product.
- * Correctly filters by product using test__engagement__product.
  */
 export async function getVulnerabilityCountBySeverity(productName: string) {
     const severities = ['Critical', 'High', 'Medium', 'Low', 'Info'];
@@ -298,7 +307,6 @@ export async function getVulnerabilityCountBySeverity(productName: string) {
 
     try {
         const countPromises = severities.map(async (severity) => {
-            // Use limit=1 to get the total count without fetching all data
             const data = await defectDojoFetch(`findings/?severity=${severity}&active=true&limit=1${productFilter}`);
             const parsedData = FindingCountSchema.parse(data);
             return { severity, count: parsedData.count };
@@ -320,9 +328,7 @@ export async function getVulnerabilityCountBySeverity(productName: string) {
     }
 }
 
-// For KPI Dashboard & Aggregate Queries
 export async function getOpenVsClosedCounts() {
-    // This function fetches only the count of findings, which is much more efficient.
     try {
         const openData = await defectDojoFetch(`findings/?active=true&duplicate=false&limit=1`);
         const closedData = await defectDojoFetch(`findings/?active=false&duplicate=false&limit=1`);
@@ -337,10 +343,6 @@ export async function getOpenVsClosedCounts() {
     }
 }
 
-
-/**
- * Efficiently gets vulnerability summaries for all products.
- */
 export async function getProductVulnerabilitySummary() {
     console.log("Fetching efficient product vulnerability summary...");
     try {
@@ -379,9 +381,6 @@ export async function getTotalFindingCount() {
     }
 }
 
-/**
- * Gets the top critical vulnerability for each product.
- */
 export async function getTopCriticalVulnerabilityPerProduct(): Promise<string> {
     console.log("Fetching top critical vulnerability for each product...");
     try {
@@ -403,12 +402,12 @@ export async function getTopCriticalVulnerabilityPerProduct(): Promise<string> {
                 }
                 return {
                     product: productName,
-                    vulnerability: null, // No critical vulnerability found
+                    vulnerability: null,
                 };
             } catch (e) {
                 return {
                     product: productName,
-                    vulnerability: null, // Error parsing or no finding
+                    vulnerability: null,
                 };
             }
         });
@@ -429,26 +428,20 @@ export async function getTopCriticalVulnerabilityPerProduct(): Promise<string> {
     }
 }
 
-/**
- * Analyzes the impact of fixing all vulnerabilities for a specific component.
- */
 export async function getComponentImpact(componentName: string) {
     console.log(`Analyzing component impact for: ${componentName}`);
     try {
-        // 1. Fetch all active findings from cache to establish a baseline
         const allFindingsData = await getCachedAllFindings();
         
         if (!allFindingsData || allFindingsData.length === 0) {
             return { error: 'No active findings found to analyze.' };
         }
 
-        // 2. Calculate total risk baseline
         let totalRisk = 0;
         allFindingsData.forEach(finding => {
             totalRisk += cvssToNumber(finding.cvssv3_score);
         });
 
-        // 3. Filter findings for the specific component (case-insensitive)
         const componentPattern = new RegExp(componentName, 'i');
         const componentFindings = allFindingsData.filter(finding => 
             componentPattern.test(finding.title) || (finding.description && componentPattern.test(finding.description))
@@ -466,7 +459,6 @@ export async function getComponentImpact(componentName: string) {
             };
         }
 
-        // 4. Calculate metrics for the component
         let componentRisk = 0;
         let criticalCount = 0;
         let highCount = 0;
@@ -477,7 +469,6 @@ export async function getComponentImpact(componentName: string) {
             if (finding.severity === 'High') highCount++;
         });
 
-        // Get top 5 critical vulnerabilities
         const topCriticalVulnerabilities = componentFindings
             .filter(f => f.severity === 'Critical')
             .sort((a, b) => cvssToNumber(b.cvssv3_score) - cvssToNumber(a.cvssv3_score))
@@ -491,10 +482,8 @@ export async function getComponentImpact(componentName: string) {
                 cwe: f.cwe ? `CWE-${f.cwe}` : 'Unknown',
             }));
 
-        // 5. Calculate risk reduction
         const riskReductionPercent = totalRisk > 0 ? (componentRisk / totalRisk) * 100 : 0;
 
-        // 6. Return the analysis
         const result = {
             componentName,
             vulnerabilityCount: componentFindings.length,
@@ -514,20 +503,15 @@ export async function getComponentImpact(componentName: string) {
     }
 }
 
-/**
- * Identifies the top N riskiest components based on their contribution to the total CVSS score.
- */
 export async function getTopRiskyComponents(limit: number = 5) {
     console.log(`Analyzing top ${limit} risky components...`);
     try {
-        // 1. Fetch all active findings from cache
         const allFindingsData = await getCachedAllFindings();
         
         if (!allFindingsData || allFindingsData.length === 0) {
             return { error: 'No active findings found to analyze.' };
         }
 
-        // 2. Calculate total risk baseline
         let totalRisk = 0;
         allFindingsData.forEach(finding => {
             totalRisk += cvssToNumber(finding.cvssv3_score);
@@ -540,7 +524,6 @@ export async function getTopRiskyComponents(limit: number = 5) {
             };
         }
 
-        // 3. Analyze each known component
         const componentAnalyses = [];
         for (const componentName of KNOWN_COMPONENTS) {
             const componentPattern = new RegExp(componentName, 'i');
@@ -571,7 +554,6 @@ export async function getTopRiskyComponents(limit: number = 5) {
             }
         }
         
-        // 4. Sort by risk and return top N
         const sortedComponents = componentAnalyses.sort((a, b) => b.riskReductionPercent - a.riskReductionPercent);
         
         const result = {
@@ -587,3 +569,5 @@ export async function getTopRiskyComponents(limit: number = 5) {
         return { error: `Failed to analyze top risky components. Details: ${errorMessage}` };
     }
 }
+
+    
