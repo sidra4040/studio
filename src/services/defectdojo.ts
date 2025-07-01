@@ -28,6 +28,19 @@ const FindingCountSchema = z.object({
     count: z.number(),
 });
 
+const TestObjectSchema = z.object({
+    id: z.number(),
+    test_type: z.object({ 
+        id: z.number(),
+        name: z.string() 
+    }).optional(),
+    engagement: z.object({ 
+        id: z.number(),
+        name: z.string(),
+        product: z.object({ id: z.number(), name: z.string() })
+    }).optional(),
+});
+
 // A more detailed schema to handle prefetched data for in-memory filtering
 const FindingSchema = z.object({
     id: z.number(),
@@ -39,18 +52,7 @@ const FindingSchema = z.object({
     cwe: z.number().nullable(),
     cve: z.string().nullable().optional(),
     cvssv3_score: z.union([z.string(), z.number()]).nullable().optional(),
-    test: z.object({
-        id: z.number(),
-        test_type: z.object({ 
-            id: z.number(),
-            name: z.string() 
-        }).optional(),
-        engagement: z.object({ 
-            id: z.number(),
-            name: z.string(),
-            product: z.object({ id: z.number(), name: z.string() })
-        }).optional(),
-    }).optional(),
+    test: z.union([TestObjectSchema, z.number()]).optional(),
 });
 
 const FindingListSchema = z.object({
@@ -74,7 +76,6 @@ async function defectDojoFetch(endpoint: string, options: RequestInit = {}) {
     }
 
     const url = endpoint.startsWith('http') ? endpoint : `${API_URL.replace(/\/$/, '')}/api/v2/${endpoint.replace(/^\//, '')}`;
-    console.log(`Querying DefectDojo: ${url}`);
 
     const response = await fetch(url, {
         ...options,
@@ -87,7 +88,6 @@ async function defectDojoFetch(endpoint: string, options: RequestInit = {}) {
 
     if (!response.ok) {
         const errorText = await response.text();
-        console.error(`DefectDojo API Error (${response.status}): ${errorText}`);
         throw new Error(`Failed to fetch from DefectDojo: ${response.status} ${response.statusText}`);
     }
 
@@ -131,24 +131,21 @@ async function defectDojoFetchAll<T>(baseUrl: string): Promise<T[]> {
 async function getCachedAllFindings(): Promise<z.infer<typeof FindingSchema>[]> {
     const now = Date.now();
     if (findingsCache.findings.length > 0 && now - findingsCache.lastFetched < findingsCache.ttl) {
-        console.log(`Returning ${findingsCache.findings.length} findings from cache for analysis.`);
         return findingsCache.findings;
     }
 
-    console.log("Cache is stale or empty for analysis. Fetching fresh findings from API.");
     // Add prefetching to get all necessary data for filtering in memory
     const endpoint = 'findings/?active=true&duplicate=false&prefetch=test__engagement__product,test__test_type';
     const findings = await defectDojoFetchAll<z.infer<typeof FindingSchema>>(endpoint);
     
     const parsedFindings = z.array(FindingSchema).safeParse(findings);
     if (!parsedFindings.success) {
-        console.error("Failed to parse cached findings:", parsedFindings.error.toString());
+        // Return an empty array on parsing failure to avoid crashing the app
         return []; 
     }
 
     findingsCache.findings = parsedFindings.data;
     findingsCache.lastFetched = now;
-    console.log(`Cached ${findings.length} findings for analysis.`);
     return findingsCache.findings;
 }
 
@@ -183,7 +180,6 @@ async function getProductIDByName(productName: string): Promise<number | null> {
         const products = await defectDojoFetchAll<z.infer<typeof ProductSchema>>(`products/?name__icontains=${encodeURIComponent(lowerProductName)}`);
         return products.length > 0 ? products[0].id : null;
     } catch (error) {
-        console.error(`Error fetching product ID for "${productName}":`, error);
         return null;
     }
 }
@@ -278,7 +274,7 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
                 cwe: f.cwe ? `CWE-${f.cwe}` : 'Unknown',
                 cvssv3_score: f.cvssv3_score || 'N/A',
                 severity: f.severity,
-                tool: f.test?.test_type?.name || 'Unknown',
+                tool: (typeof f.test === 'object' && f.test?.test_type?.name) || 'Unknown',
                 description: f.description,
                 mitigation: f.mitigation,
             })),
@@ -287,7 +283,6 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
         return JSON.stringify(responseData, null, 2);
 
     } catch (error) {
-        console.error('Error in getFindings:', error);
         const errorMessage = error instanceof Error ? error.message : String(error);
         return JSON.stringify({ error: `An exception occurred. Details: ${errorMessage}` });
     }
@@ -319,7 +314,6 @@ export async function getVulnerabilityCountBySeverity(productName: string) {
         
         return counts;
     } catch(error) {
-        console.error(`Error fetching severity counts for ${productName}:`, error);
         return { error: `Could not retrieve counts for ${productName}` };
     }
 }
@@ -334,23 +328,21 @@ export async function getOpenVsClosedCounts() {
             closed: FindingCountSchema.parse(closedData).count,
         };
     } catch (error) {
-        console.error("Error fetching open/closed counts:", error);
         return { error: "Failed to fetch open/closed counts", open: 0, closed: 0 };
     }
 }
 
 export async function getProductVulnerabilitySummary() {
-    console.log("Fetching efficient product vulnerability summary...");
     try {
         const allFindings = await getCachedAllFindings();
-        const productList = [...new Set(allFindings.map(f => f.test?.engagement?.product?.name).filter(p => p))];
+        const productList = [...new Set(allFindings.map(f => (typeof f.test === 'object' && f.test?.engagement?.product?.name) || null).filter(p => p))];
 
         const summary: Record<string, any> = {};
 
         for (const productName of productList) {
             if (!productName) continue;
             // Use in-memory filtering for summary to avoid hammering the API
-            const productFindings = allFindings.filter(f => f.test?.engagement?.product?.name === productName);
+            const productFindings = allFindings.filter(f => typeof f.test === 'object' && f.test?.engagement?.product?.name === productName);
             const counts: Record<string, number> = { Critical: 0, High: 0, Medium: 0, Low: 0, Info: 0, Total: 0 };
             productFindings.forEach(f => {
                 if (counts[f.severity] !== undefined) {
@@ -361,10 +353,8 @@ export async function getProductVulnerabilitySummary() {
             summary[productName] = counts;
         }
 
-        console.log("Finished calculating product vulnerability summary.");
         return summary;
     } catch(error) {
-        console.error("Error in getProductVulnerabilitySummary:", error);
         return null;
     }
 }
@@ -380,12 +370,12 @@ export async function getTotalFindingCount() {
 }
 
 export async function getTopCriticalVulnerabilityPerProduct(): Promise<string> {
-    console.log("Fetching top critical vulnerability for each product...");
     try {
         const allFindings = await getCachedAllFindings();
         const criticalFindings = allFindings.filter(f => f.severity === 'Critical');
         
         const vulnerabilitiesByProduct = criticalFindings.reduce((acc, f) => {
+            if (typeof f.test !== 'object') return acc;
             const productName = f.test?.engagement?.product?.name;
             if (!productName) return acc;
 
@@ -415,14 +405,12 @@ export async function getTopCriticalVulnerabilityPerProduct(): Promise<string> {
         return JSON.stringify({ vulnerabilitiesByProduct: results }, null, 2);
 
     } catch (error) {
-        console.error("Error in getTopCriticalVulnerabilityPerProduct:", error);
         const errorMessage = error instanceof Error ? error.message : String(error);
         return JSON.stringify({ error: `An exception occurred: ${errorMessage}` });
     }
 }
 
 export async function getComponentImpact(componentName: string) {
-    console.log(`Analyzing component impact for: ${componentName}`);
     try {
         const allFindingsData = await getCachedAllFindings();
         
@@ -486,18 +474,15 @@ export async function getComponentImpact(componentName: string) {
             sampleVulnerabilities: topCriticalVulnerabilities,
         };
 
-        console.log("Component impact analysis result:", result);
         return result;
 
     } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
-        console.error(`Error analyzing component impact for ${componentName}:`, errorMessage);
         return { error: `Failed to analyze component impact. Details: ${errorMessage}` };
     }
 }
 
 export async function getTopRiskyComponents(limit: number = 5) {
-    console.log(`Analyzing top ${limit} risky components...`);
     try {
         const allFindingsData = await getCachedAllFindings();
         
@@ -553,12 +538,10 @@ export async function getTopRiskyComponents(limit: number = 5) {
             topComponents: sortedComponents.slice(0, limit)
         };
         
-        console.log("Top risky components analysis result:", result);
         return result;
 
     } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
-        console.error(`Error analyzing top risky components:`, errorMessage);
         return { error: `Failed to analyze top risky components. Details: ${errorMessage}` };
     }
 }
