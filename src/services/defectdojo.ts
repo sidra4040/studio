@@ -103,17 +103,15 @@ async function defectDojoFetchAll<T>(initialUrl: string): Promise<T[]> {
     let results: T[] = [];
     let nextUrl: string | null = initialUrl;
 
-    // Extract prefetch from the initial URL, as it's often dropped by the API's pagination links
-    const prefetchParam = new URLSearchParams(initialUrl.split('?')[1]).get('prefetch');
+    const initialParams = new URLSearchParams(initialUrl.split('?')[1]);
+    const prefetchParam = initialParams.get('prefetch');
 
     while (nextUrl) {
         const data = await defectDojoFetch(nextUrl);
         results = results.concat(data.results);
         
-        nextUrl = data.next; // This is a full URL from the API
+        nextUrl = data.next;
 
-        // If the next URL exists and is missing the prefetch parameter, add it back.
-        // This is the critical fix to ensure all data is fetched with product details.
         if (nextUrl && prefetchParam) {
             try {
                 const nextUrlObject = new URL(nextUrl);
@@ -122,7 +120,6 @@ async function defectDojoFetchAll<T>(initialUrl: string): Promise<T[]> {
                     nextUrl = nextUrlObject.toString();
                 }
             } catch (e) {
-                // If URL parsing fails for some reason, stop pagination.
                 console.error("Failed to parse 'next' URL from DefectDojo, stopping pagination.", e);
                 nextUrl = null;
             }
@@ -141,7 +138,6 @@ async function getCachedAllFindings(): Promise<z.infer<typeof FindingSchema>[]> 
         return findingsCache.findings;
     }
 
-    console.log("Cache is stale or empty. Fetching fresh findings from API for analysis.");
     const endpoint = 'findings/?active=true&duplicate=false&prefetch=test__engagement__product,test__test_type&limit=100';
     
     const allRawFindings = await defectDojoFetchAll<any>(endpoint);
@@ -191,7 +187,6 @@ async function getProductIDByName(productName: string): Promise<number | null> {
         const products = await defectDojoFetchAll<z.infer<typeof ProductSchema>>(`products/?name__icontains=${encodeURIComponent(lowerProductName)}`);
         return products.length > 0 ? products[0].id : null;
     } catch (error) {
-        console.error(`Could not find product ID for ${productName}`, error);
         return null;
     }
 }
@@ -204,7 +199,6 @@ export async function getProductList() {
         const products = await defectDojoFetchAll<z.infer<typeof ProductSchema>>('products/');
         return products.map(p => p.name);
     } catch (error) {
-        console.error("Failed to get product list:", error);
         return { error: error instanceof Error ? error.message : String(error) };
     }
 }
@@ -217,7 +211,6 @@ export async function getToolList() {
     try {
         return Object.values(TOOL_ENGAGEMENT_MAP).map(tool => tool.name);
     } catch (error) {
-        console.error("Failed to get tool list:", error);
         return { error: error instanceof Error ? error.message : String(error) };
     }
 }
@@ -328,7 +321,6 @@ export async function getVulnerabilityCountBySeverity(productName: string) {
         
         return counts;
     } catch(error) {
-        console.error(`Could not retrieve counts for ${productName}`, error);
         return { error: `Could not retrieve counts for ${productName}` };
     }
 }
@@ -343,7 +335,6 @@ export async function getOpenVsClosedCounts() {
             closed: FindingCountSchema.parse(closedData).count,
         };
     } catch (error) {
-        console.error("Failed to fetch open/closed counts", error);
         return { error: "Failed to fetch open/closed counts", open: 0, closed: 0 };
     }
 }
@@ -371,8 +362,7 @@ export async function getProductVulnerabilitySummary() {
         
         return summary;
     } catch(error) {
-        console.error("Failed to get product vulnerability summary", error);
-        return null;
+        return {};
     }
 }
 
@@ -382,7 +372,6 @@ export async function getTotalFindingCount() {
         return { count: FindingCountSchema.parse(data).count };
     } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
-        console.error(`Failed to retrieve total finding count: ${errorMessage}`);
         return { error: `Failed to retrieve total finding count: ${errorMessage}` };
     }
 }
@@ -564,3 +553,5 @@ export async function getTopRiskyComponents(limit: number = 5) {
         return { error: `Failed to analyze top risky components. Details: ${errorMessage}` };
     }
 }
+
+    
