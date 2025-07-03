@@ -103,7 +103,7 @@ async function defectDojoFetch(endpoint: string, options: RequestInit = {}) {
 async function defectDojoFetchAll<T>(baseUrl: string): Promise<T[]> {
     let results: T[] = [];
     let offset = 0;
-    const limit = 1000;
+    const limit = 100;
     let hasMore = true;
 
     while (hasMore) {
@@ -130,6 +130,7 @@ async function defectDojoFetchAll<T>(baseUrl: string): Promise<T[]> {
 
 /**
  * Fetches all active findings for broad analysis, using a cache to avoid repeated API calls.
+ * This version is resilient to individual record parsing errors.
  */
 async function getCachedAllFindings(): Promise<z.infer<typeof FindingSchema>[]> {
     const now = Date.now();
@@ -138,22 +139,26 @@ async function getCachedAllFindings(): Promise<z.infer<typeof FindingSchema>[]> 
     }
 
     console.log("Cache is stale or empty. Fetching fresh findings from API.");
-    // Add prefetching to get all necessary data for filtering in memory
     const endpoint = 'findings/?active=true&duplicate=false&prefetch=test__engagement__product,test__test_type';
-    const findings = await defectDojoFetchAll<any>(endpoint);
+    const allRawFindings = await defectDojoFetchAll<any>(endpoint);
     
-    // Use safeParse to handle potential schema mismatches without crashing
-    const parsedFindings = z.array(FindingSchema).safeParse(findings);
-
-    if (!parsedFindings.success) {
-        // Log the validation error for debugging but still return the data that was fetched
-        console.error("Zod validation failed for some findings. The dashboard might be incomplete.", parsedFindings.error.format());
-        // Even on partial failure, we can still use the raw data for some calculations
-        findingsCache.findings = findings as z.infer<typeof FindingSchema>[];
-    } else {
-        findingsCache.findings = parsedFindings.data;
+    const successfullyParsedFindings: z.infer<typeof FindingSchema>[] = [];
+    let errorCount = 0;
+    for (const finding of allRawFindings) {
+        const result = FindingSchema.safeParse(finding);
+        if (result.success) {
+            successfullyParsedFindings.push(result.data);
+        } else {
+            errorCount++;
+        }
+    }
+    
+    if (errorCount > 0) {
+        // This log is useful for debugging but won't spam the console with huge objects.
+        console.log(`Skipped ${errorCount} malformed findings during data processing.`);
     }
 
+    findingsCache.findings = successfullyParsedFindings;
     findingsCache.lastFetched = now;
     return findingsCache.findings;
 }
