@@ -41,8 +41,6 @@ const TestObjectSchema = z.object({
     }).optional(),
 });
 
-// A more detailed schema to handle prefetched data for in-memory filtering
-// This now correctly handles `test` being either a full object or just an ID number.
 const FindingSchema = z.object({
     id: z.number(),
     title: z.string(),
@@ -100,10 +98,13 @@ async function defectDojoFetch(endpoint: string, options: RequestInit = {}) {
 
 /**
  * Fetches all results from a paginated DefectDojo endpoint efficiently by following the 'next' link.
+ * This version is corrected to preserve query parameters across all paginated requests.
  */
 async function defectDojoFetchAll<T>(initialUrl: string): Promise<T[]> {
     let results: T[] = [];
     let nextUrl: string | null = initialUrl;
+    const initialUrlObject = new URL(initialUrl, 'http://localhost'); // Base is placeholder
+    const initialParams = initialUrlObject.searchParams;
 
     while (nextUrl) {
         const data = await defectDojoFetch(nextUrl);
@@ -111,7 +112,25 @@ async function defectDojoFetchAll<T>(initialUrl: string): Promise<T[]> {
         if (batch && batch.length > 0) {
             results = results.concat(batch);
         }
-        nextUrl = data.next;
+        
+        if (data.next) {
+            // The 'next' URL from the API might not contain all original query params (like 'prefetch').
+            // We reconstruct it to ensure they are preserved.
+            const nextUrlObject = new URL(data.next);
+            const nextParams = nextUrlObject.searchParams;
+            
+            initialParams.forEach((value, key) => {
+                if (!nextParams.has(key)) {
+                    nextParams.set(key, value);
+                }
+            });
+            
+            // Rebuild the path and search params from the 'next' URL, now with preserved params.
+            nextUrl = `${nextUrlObject.pathname}?${nextParams.toString()}`;
+
+        } else {
+            nextUrl = null;
+        }
     }
     return results;
 }
@@ -143,7 +162,6 @@ async function getCachedAllFindings(): Promise<z.infer<typeof FindingSchema>[]> 
     }
     
     if (errorCount > 0) {
-        // This log is now concise and will only appear once.
         console.log(`Skipped ${errorCount} of ${allRawFindings.length} findings due to data format issues.`);
     }
 
@@ -344,10 +362,8 @@ export async function getProductVulnerabilitySummary() {
     try {
         const allFindings = await getCachedAllFindings();
         const summary: Record<string, Record<string, number>> = {};
-        let processedCount = 0;
-
+        
         for (const finding of allFindings) {
-            // This is the critical fix. It now correctly checks for the nested product name.
             if (finding.test && typeof finding.test === 'object' && finding.test.engagement?.product?.name) {
                 const productName = finding.test.engagement.product.name;
 
@@ -360,11 +376,9 @@ export async function getProductVulnerabilitySummary() {
                     summary[productName][severity]++;
                 }
                 summary[productName].Total++;
-                processedCount++;
             }
         }
         
-        console.log(`Successfully processed ${processedCount} of ${allFindings.length} findings for product summary.`);
         return summary;
     } catch(error) {
         console.error("Failed to get product vulnerability summary", error);
