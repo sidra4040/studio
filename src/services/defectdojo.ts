@@ -98,32 +98,19 @@ async function defectDojoFetch(endpoint: string, options: RequestInit = {}) {
 }
 
 /**
- * Fetches all results from a paginated DefectDojo endpoint efficiently.
+ * Fetches all results from a paginated DefectDojo endpoint efficiently by following the 'next' link.
  */
-async function defectDojoFetchAll<T>(baseUrl: string): Promise<T[]> {
+async function defectDojoFetchAll<T>(initialUrl: string): Promise<T[]> {
     let results: T[] = [];
-    let offset = 0;
-    const limit = 100;
-    let hasMore = true;
+    let nextUrl: string | null = initialUrl;
 
-    while (hasMore) {
-        const separator = baseUrl.includes('?') ? '&' : '?';
-        const urlWithPagination = `${baseUrl}${separator}limit=${limit}&offset=${offset}`;
-        
-        const data = await defectDojoFetch(urlWithPagination);
-        
+    while (nextUrl) {
+        const data = await defectDojoFetch(nextUrl);
         const batch = data.results as T[];
         if (batch && batch.length > 0) {
             results = results.concat(batch);
-            offset += limit;
-        } else {
-            hasMore = false;
         }
-
-        // Stop if the API indicates no more pages or returns a batch smaller than the limit
-        if (!data.next || (batch && batch.length < limit)) {
-            hasMore = false;
-        }
+        nextUrl = data.next;
     }
     return results;
 }
@@ -139,7 +126,7 @@ async function getCachedAllFindings(): Promise<z.infer<typeof FindingSchema>[]> 
     }
 
     console.log("Cache is stale or empty. Fetching fresh findings from API.");
-    const endpoint = 'findings/?active=true&duplicate=false&prefetch=test__engagement__product,test__test_type';
+    const endpoint = 'findings/?active=true&duplicate=false&prefetch=test__engagement__product,test__test_type&limit=100';
     const allRawFindings = await defectDojoFetchAll<any>(endpoint);
     
     const successfullyParsedFindings: z.infer<typeof FindingSchema>[] = [];
@@ -154,7 +141,6 @@ async function getCachedAllFindings(): Promise<z.infer<typeof FindingSchema>[]> 
     }
     
     if (errorCount > 0) {
-        // This log is useful for debugging but won't spam the console with huge objects.
         console.log(`Skipped ${errorCount} malformed findings during data processing.`);
     }
 
