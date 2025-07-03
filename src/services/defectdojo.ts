@@ -76,6 +76,8 @@ async function defectDojoFetch(endpoint: string, options: RequestInit = {}) {
     }
 
     const url = endpoint.startsWith('http') ? endpoint : `${API_URL.replace(/\/$/, '')}/api/v2/${endpoint.replace(/^\//, '')}`;
+    
+    console.log(`Querying DefectDojo: ${url}`);
 
     const response = await fetch(url, {
         ...options,
@@ -88,6 +90,7 @@ async function defectDojoFetch(endpoint: string, options: RequestInit = {}) {
 
     if (!response.ok) {
         const errorText = await response.text();
+        console.error(`Failed to fetch from DefectDojo: ${response.status} ${response.statusText}`, errorText);
         throw new Error(`Failed to fetch from DefectDojo: ${response.status} ${response.statusText}`);
     }
 
@@ -134,17 +137,23 @@ async function getCachedAllFindings(): Promise<z.infer<typeof FindingSchema>[]> 
         return findingsCache.findings;
     }
 
+    console.log("Cache is stale or empty. Fetching fresh findings from API.");
     // Add prefetching to get all necessary data for filtering in memory
     const endpoint = 'findings/?active=true&duplicate=false&prefetch=test__engagement__product,test__test_type';
-    const findings = await defectDojoFetchAll<z.infer<typeof FindingSchema>>(endpoint);
+    const findings = await defectDojoFetchAll<any>(endpoint);
     
+    // Use safeParse to handle potential schema mismatches without crashing
     const parsedFindings = z.array(FindingSchema).safeParse(findings);
+
     if (!parsedFindings.success) {
-        // Return an empty array on parsing failure to avoid crashing the app
-        return []; 
+        // Log the validation error for debugging but still return the data that was fetched
+        console.error("Zod validation failed for some findings. The dashboard might be incomplete.", parsedFindings.error.format());
+        // Even on partial failure, we can still use the raw data for some calculations
+        findingsCache.findings = findings as z.infer<typeof FindingSchema>[];
+    } else {
+        findingsCache.findings = parsedFindings.data;
     }
 
-    findingsCache.findings = parsedFindings.data;
     findingsCache.lastFetched = now;
     return findingsCache.findings;
 }
@@ -180,6 +189,7 @@ async function getProductIDByName(productName: string): Promise<number | null> {
         const products = await defectDojoFetchAll<z.infer<typeof ProductSchema>>(`products/?name__icontains=${encodeURIComponent(lowerProductName)}`);
         return products.length > 0 ? products[0].id : null;
     } catch (error) {
+        console.error(`Could not find product ID for ${productName}`, error);
         return null;
     }
 }
@@ -192,6 +202,7 @@ export async function getProductList() {
         const products = await defectDojoFetchAll<z.infer<typeof ProductSchema>>('products/');
         return products.map(p => p.name);
     } catch (error) {
+        console.error("Failed to get product list:", error);
         return { error: error instanceof Error ? error.message : String(error) };
     }
 }
@@ -204,6 +215,7 @@ export async function getToolList() {
     try {
         return Object.values(TOOL_ENGAGEMENT_MAP).map(tool => tool.name);
     } catch (error) {
+        console.error("Failed to get tool list:", error);
         return { error: error instanceof Error ? error.message : String(error) };
     }
 }
@@ -314,6 +326,7 @@ export async function getVulnerabilityCountBySeverity(productName: string) {
         
         return counts;
     } catch(error) {
+        console.error(`Could not retrieve counts for ${productName}`, error);
         return { error: `Could not retrieve counts for ${productName}` };
     }
 }
@@ -328,6 +341,7 @@ export async function getOpenVsClosedCounts() {
             closed: FindingCountSchema.parse(closedData).count,
         };
     } catch (error) {
+        console.error("Failed to fetch open/closed counts", error);
         return { error: "Failed to fetch open/closed counts", open: 0, closed: 0 };
     }
 }
@@ -335,26 +349,30 @@ export async function getOpenVsClosedCounts() {
 export async function getProductVulnerabilitySummary() {
     try {
         const allFindings = await getCachedAllFindings();
-        const productList = [...new Set(allFindings.map(f => (typeof f.test === 'object' && f.test?.engagement?.product?.name) || null).filter(p => p))];
+        const summary: Record<string, Record<string, number>> = {};
 
-        const summary: Record<string, any> = {};
+        for (const finding of allFindings) {
+            // Safely access nested product name
+            const productName = (finding.test && typeof finding.test === 'object' && finding.test.engagement?.product?.name) || null;
 
-        for (const productName of productList) {
-            if (!productName) continue;
-            // Use in-memory filtering for summary to avoid hammering the API
-            const productFindings = allFindings.filter(f => typeof f.test === 'object' && f.test?.engagement?.product?.name === productName);
-            const counts: Record<string, number> = { Critical: 0, High: 0, Medium: 0, Low: 0, Info: 0, Total: 0 };
-            productFindings.forEach(f => {
-                if (counts[f.severity] !== undefined) {
-                    counts[f.severity]++;
+            if (productName) {
+                // Initialize summary for the product if it doesn't exist
+                if (!summary[productName]) {
+                    summary[productName] = { Critical: 0, High: 0, Medium: 0, Low: 0, Info: 0, Total: 0 };
                 }
-                counts.Total++;
-            });
-            summary[productName] = counts;
-        }
 
+                // Increment counts
+                const severity = finding.severity;
+                if (summary[productName][severity] !== undefined) {
+                    summary[productName][severity]++;
+                }
+                summary[productName].Total++;
+            }
+        }
+        
         return summary;
     } catch(error) {
+        console.error("Failed to get product vulnerability summary", error);
         return null;
     }
 }
@@ -365,6 +383,7 @@ export async function getTotalFindingCount() {
         return { count: FindingCountSchema.parse(data).count };
     } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
+        console.error(`Failed to retrieve total finding count: ${errorMessage}`);
         return { error: `Failed to retrieve total finding count: ${errorMessage}` };
     }
 }
