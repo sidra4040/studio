@@ -357,16 +357,14 @@ export async function getProductVulnerabilitySummary() {
         const summary: Record<string, Record<string, number>> = {};
 
         for (const finding of allFindings) {
-            // Safely access nested product name
-            const productName = (finding.test && typeof finding.test === 'object' && finding.test.engagement?.product?.name) || null;
+            // Safely access nested product name, only processing if test is a prefetched object
+            if (finding.test && typeof finding.test === 'object' && finding.test.engagement?.product?.name) {
+                const productName = finding.test.engagement.product.name;
 
-            if (productName) {
-                // Initialize summary for the product if it doesn't exist
                 if (!summary[productName]) {
                     summary[productName] = { Critical: 0, High: 0, Medium: 0, Low: 0, Info: 0, Total: 0 };
                 }
 
-                // Increment counts
                 const severity = finding.severity;
                 if (summary[productName][severity] !== undefined) {
                     summary[productName][severity]++;
@@ -399,10 +397,11 @@ export async function getTopCriticalVulnerabilityPerProduct(): Promise<string> {
         const criticalFindings = allFindings.filter(f => f.severity === 'Critical');
         
         const vulnerabilitiesByProduct = criticalFindings.reduce((acc, f) => {
-            if (typeof f.test !== 'object') return acc;
-            const productName = f.test?.engagement?.product?.name;
-            if (!productName) return acc;
-
+            if (typeof f.test !== 'object' || !f.test?.engagement?.product?.name) {
+                return acc;
+            }
+            const productName = f.test.engagement.product.name;
+            
             const currentVulnerability = acc[productName];
             const newVulnerability = {
                 id: f.id,
