@@ -107,7 +107,6 @@ async function defectDojoFetchAll<T>(initialUrl: string): Promise<T[]> {
         throw new Error("DEFECTDOJO_API_URL is not set.");
     }
     
-    // Use the initial URL to determine the prefetch parameter to be carried over.
     const initialUrlObject = new URL(initialUrl, API_URL); 
     const prefetchParam = initialUrlObject.searchParams.get('prefetch');
 
@@ -119,18 +118,15 @@ async function defectDojoFetchAll<T>(initialUrl: string): Promise<T[]> {
         
         nextUrl = data.next;
 
-        // Ensure the prefetch parameter is carried over to the next paginated request
         if (nextUrl && prefetchParam) {
             try {
-                // The 'next' URL from DefectDojo might be a full URL or just a path.
-                // Using new URL() with a base URL handles both cases robustly.
                 const nextUrlObject = new URL(nextUrl, API_URL);
                 if (!nextUrlObject.searchParams.has('prefetch')) {
                     nextUrlObject.searchParams.set('prefetch', prefetchParam);
                 }
                 nextUrl = nextUrlObject.href;
             } catch (e) {
-                // If parsing fails, stop pagination to prevent infinite loops on malformed URLs.
+                console.error("Failed to parse 'next' URL, stopping pagination:", e);
                 nextUrl = null;
             }
         }
@@ -355,7 +351,6 @@ export async function getProductVulnerabilitySummary() {
         const summary: Record<string, Record<string, number>> = {};
         
         for (const finding of allFindings) {
-            // Only process findings that have the full test object with product info
             if (finding.test && typeof finding.test === 'object' && finding.test.engagement?.product?.name) {
                 const productName = finding.test.engagement.product.name;
 
