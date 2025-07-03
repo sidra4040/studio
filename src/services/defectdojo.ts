@@ -96,8 +96,8 @@ async function defectDojoFetch(endpoint: string, options: RequestInit = {}) {
 }
 
 /**
- * Fetches all results from a paginated DefectDojo endpoint efficiently by following the 'next' link.
- * This version correctly preserves the 'prefetch' parameter across all pages.
+ * Fetches all results from a paginated DefectDojo endpoint efficiently by following the 'next' link,
+ * correctly preserving the 'prefetch' parameter across all pages.
  */
 async function defectDojoFetchAll<T>(initialUrl: string): Promise<T[]> {
     let results: T[] = [];
@@ -107,8 +107,9 @@ async function defectDojoFetchAll<T>(initialUrl: string): Promise<T[]> {
         throw new Error("DEFECTDOJO_API_URL is not set.");
     }
     
-    const initialUrlObject = new URL(initialUrl, API_URL); 
-    const prefetchParam = initialUrlObject.searchParams.get('prefetch');
+    // Extract the prefetch value ONCE from the initial URL's query params.
+    const urlForPrefetch = new URL(initialUrl, API_URL);
+    const prefetchParam = urlForPrefetch.searchParams.get('prefetch');
 
     while (nextUrl) {
         const data = await defectDojoFetch(nextUrl);
@@ -118,15 +119,18 @@ async function defectDojoFetchAll<T>(initialUrl: string): Promise<T[]> {
         
         nextUrl = data.next;
 
+        // If there's a next page AND we had a prefetch parameter initially,
+        // we MUST add it to the next URL, because the DefectDojo API drops it.
         if (nextUrl && prefetchParam) {
             try {
-                const nextUrlObject = new URL(nextUrl, API_URL);
-                if (!nextUrlObject.searchParams.has('prefetch')) {
-                    nextUrlObject.searchParams.set('prefetch', prefetchParam);
-                }
+                // The 'next' URL from the API is a full URL.
+                const nextUrlObject = new URL(nextUrl); 
+                // Add the prefetch param back in.
+                nextUrlObject.searchParams.set('prefetch', prefetchParam);
+                // Use the modified URL for the next loop iteration.
                 nextUrl = nextUrlObject.href;
             } catch (e) {
-                console.error("Failed to parse 'next' URL, stopping pagination:", e);
+                console.error("Failed to parse 'next' URL from DefectDojo, stopping pagination:", e);
                 nextUrl = null;
             }
         }
@@ -144,19 +148,31 @@ async function getCachedAllFindings(): Promise<z.infer<typeof FindingSchema>[]> 
         return findingsCache.findings;
     }
 
+    console.log("Cache is stale or empty. Fetching fresh findings from API.");
     const endpoint = 'findings/?active=true&duplicate=false&prefetch=test__engagement__product,test__test_type&limit=100';
     
     const allRawFindings = await defectDojoFetchAll<any>(endpoint);
     
     const successfullyParsedFindings: z.infer<typeof FindingSchema>[] = [];
+    const parsingErrors: any[] = [];
     
     for (const finding of allRawFindings) {
         const result = FindingSchema.safeParse(finding);
         if (result.success) {
             successfullyParsedFindings.push(result.data);
+        } else {
+            // Log the error but don't crash the entire process
+            parsingErrors.push({
+                findingId: finding.id,
+                errors: result.error.issues,
+            });
         }
     }
     
+    if (parsingErrors.length > 0) {
+        console.warn(`Encountered ${parsingErrors.length} findings with parsing errors. They will be excluded from the summary.`);
+    }
+
     findingsCache.findings = successfullyParsedFindings;
     findingsCache.lastFetched = now;
     return findingsCache.findings;
@@ -341,6 +357,7 @@ export async function getOpenVsClosedCounts() {
             closed: FindingCountSchema.parse(closedData).count,
         };
     } catch (error) {
+        console.error("Failed to fetch open/closed counts", error);
         return { error: "Failed to fetch open/closed counts", open: 0, closed: 0 };
     }
 }
@@ -368,6 +385,7 @@ export async function getProductVulnerabilitySummary() {
         
         return summary;
     } catch(error) {
+        console.error("Failed to get product vulnerability summary", error);
         return {};
     }
 }
