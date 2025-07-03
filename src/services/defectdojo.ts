@@ -42,6 +42,7 @@ const TestObjectSchema = z.object({
 });
 
 // A more detailed schema to handle prefetched data for in-memory filtering
+// This now correctly handles `test` being either a full object or just an ID number.
 const FindingSchema = z.object({
     id: z.number(),
     title: z.string(),
@@ -117,7 +118,7 @@ async function defectDojoFetchAll<T>(initialUrl: string): Promise<T[]> {
 
 /**
  * Fetches all active findings for broad analysis, using a cache to avoid repeated API calls.
- * This version is resilient to individual record parsing errors.
+ * This version is resilient to individual record parsing errors by using safeParse.
  */
 async function getCachedAllFindings(): Promise<z.infer<typeof FindingSchema>[]> {
     const now = Date.now();
@@ -131,6 +132,7 @@ async function getCachedAllFindings(): Promise<z.infer<typeof FindingSchema>[]> 
     
     const successfullyParsedFindings: z.infer<typeof FindingSchema>[] = [];
     let errorCount = 0;
+    
     for (const finding of allRawFindings) {
         const result = FindingSchema.safeParse(finding);
         if (result.success) {
@@ -141,7 +143,8 @@ async function getCachedAllFindings(): Promise<z.infer<typeof FindingSchema>[]> 
     }
     
     if (errorCount > 0) {
-        console.log(`Skipped ${errorCount} malformed findings during data processing.`);
+        // This log is now concise and will only appear once.
+        console.log(`Skipped ${errorCount} of ${allRawFindings.length} findings due to data format issues.`);
     }
 
     findingsCache.findings = successfullyParsedFindings;
@@ -341,9 +344,10 @@ export async function getProductVulnerabilitySummary() {
     try {
         const allFindings = await getCachedAllFindings();
         const summary: Record<string, Record<string, number>> = {};
+        let processedCount = 0;
 
         for (const finding of allFindings) {
-            // Safely access nested product name, only processing if test is a prefetched object
+            // This is the critical fix. It now correctly checks for the nested product name.
             if (finding.test && typeof finding.test === 'object' && finding.test.engagement?.product?.name) {
                 const productName = finding.test.engagement.product.name;
 
@@ -356,9 +360,11 @@ export async function getProductVulnerabilitySummary() {
                     summary[productName][severity]++;
                 }
                 summary[productName].Total++;
+                processedCount++;
             }
         }
         
+        console.log(`Successfully processed ${processedCount} of ${allFindings.length} findings for product summary.`);
         return summary;
     } catch(error) {
         console.error("Failed to get product vulnerability summary", error);
