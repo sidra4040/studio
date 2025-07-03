@@ -131,7 +131,6 @@ async function defectDojoFetchAll<T>(initialUrl: string): Promise<T[]> {
                 nextUrl = nextUrlObject.href;
             } catch (e) {
                 // If parsing fails, stop pagination to prevent infinite loops on malformed URLs.
-                console.error("Failed to construct next URL for DefectDojo pagination, stopping.", e);
                 nextUrl = null;
             }
         }
@@ -565,7 +564,3 @@ export async function getTopRiskyComponents(limit: number = 5) {
         return { error: `Failed to analyze top risky components. Details: ${errorMessage}` };
     }
 }
-
-    
-
-    
