@@ -103,24 +103,35 @@ async function defectDojoFetchAll<T>(initialUrl: string): Promise<T[]> {
     let results: T[] = [];
     let nextUrl: string | null = initialUrl;
 
-    const initialParams = new URLSearchParams(initialUrl.split('?')[1]);
-    const prefetchParam = initialParams.get('prefetch');
+    if (!API_URL) {
+        throw new Error("DEFECTDOJO_API_URL is not set.");
+    }
+    
+    // Use the initial URL to determine the prefetch parameter to be carried over.
+    const initialUrlObject = new URL(initialUrl, API_URL); 
+    const prefetchParam = initialUrlObject.searchParams.get('prefetch');
 
     while (nextUrl) {
         const data = await defectDojoFetch(nextUrl);
-        results = results.concat(data.results);
+        if (data.results) {
+            results = results.concat(data.results);
+        }
         
         nextUrl = data.next;
 
+        // Ensure the prefetch parameter is carried over to the next paginated request
         if (nextUrl && prefetchParam) {
             try {
-                const nextUrlObject = new URL(nextUrl);
+                // The 'next' URL from DefectDojo might be a full URL or just a path.
+                // Using new URL() with a base URL handles both cases robustly.
+                const nextUrlObject = new URL(nextUrl, API_URL);
                 if (!nextUrlObject.searchParams.has('prefetch')) {
                     nextUrlObject.searchParams.set('prefetch', prefetchParam);
-                    nextUrl = nextUrlObject.toString();
                 }
+                nextUrl = nextUrlObject.href;
             } catch (e) {
-                console.error("Failed to parse 'next' URL from DefectDojo, stopping pagination.", e);
+                // If parsing fails, stop pagination to prevent infinite loops on malformed URLs.
+                console.error("Failed to construct next URL for DefectDojo pagination, stopping.", e);
                 nextUrl = null;
             }
         }
@@ -345,6 +356,7 @@ export async function getProductVulnerabilitySummary() {
         const summary: Record<string, Record<string, number>> = {};
         
         for (const finding of allFindings) {
+            // Only process findings that have the full test object with product info
             if (finding.test && typeof finding.test === 'object' && finding.test.engagement?.product?.name) {
                 const productName = finding.test.engagement.product.name;
 
@@ -553,5 +565,7 @@ export async function getTopRiskyComponents(limit: number = 5) {
         return { error: `Failed to analyze top risky components. Details: ${errorMessage}` };
     }
 }
+
+    
 
     
