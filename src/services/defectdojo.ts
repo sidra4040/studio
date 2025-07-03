@@ -89,8 +89,7 @@ async function defectDojoFetch(endpoint: string, options: RequestInit = {}) {
 
     if (!response.ok) {
         const errorText = await response.text();
-        console.error(`Failed to fetch from DefectDojo: ${response.status} ${response.statusText}`, errorText);
-        throw new Error(`Failed to fetch from DefectDojo: ${response.status} ${response.statusText}`);
+        throw new Error(`Failed to fetch from DefectDojo: ${response.status} ${response.statusText}. Details: ${errorText}`);
     }
 
     return response.json();
@@ -98,46 +97,43 @@ async function defectDojoFetch(endpoint: string, options: RequestInit = {}) {
 
 /**
  * Fetches all results from a paginated DefectDojo endpoint efficiently by following the 'next' link.
- * This version is corrected to preserve query parameters across all paginated requests.
+ * This version correctly preserves the 'prefetch' parameter across all pages.
  */
 async function defectDojoFetchAll<T>(initialUrl: string): Promise<T[]> {
     let results: T[] = [];
     let nextUrl: string | null = initialUrl;
-    const initialUrlObject = new URL(initialUrl, 'http://localhost'); // Base is placeholder
-    const initialParams = initialUrlObject.searchParams;
+
+    // Extract prefetch from the initial URL, as it's often dropped by the API's pagination links
+    const prefetchParam = new URLSearchParams(initialUrl.split('?')[1]).get('prefetch');
 
     while (nextUrl) {
         const data = await defectDojoFetch(nextUrl);
-        const batch = data.results as T[];
-        if (batch && batch.length > 0) {
-            results = results.concat(batch);
-        }
+        results = results.concat(data.results);
         
-        if (data.next) {
-            // The 'next' URL from the API might not contain all original query params (like 'prefetch').
-            // We reconstruct it to ensure they are preserved.
-            const nextUrlObject = new URL(data.next);
-            const nextParams = nextUrlObject.searchParams;
-            
-            initialParams.forEach((value, key) => {
-                if (!nextParams.has(key)) {
-                    nextParams.set(key, value);
-                }
-            });
-            
-            // Rebuild the path and search params from the 'next' URL, now with preserved params.
-            nextUrl = `${nextUrlObject.pathname}?${nextParams.toString()}`;
+        nextUrl = data.next; // This is a full URL from the API
 
-        } else {
-            nextUrl = null;
+        // If the next URL exists and is missing the prefetch parameter, add it back.
+        // This is the critical fix to ensure all data is fetched with product details.
+        if (nextUrl && prefetchParam) {
+            try {
+                const nextUrlObject = new URL(nextUrl);
+                if (!nextUrlObject.searchParams.has('prefetch')) {
+                    nextUrlObject.searchParams.set('prefetch', prefetchParam);
+                    nextUrl = nextUrlObject.toString();
+                }
+            } catch (e) {
+                // If URL parsing fails for some reason, stop pagination.
+                console.error("Failed to parse 'next' URL from DefectDojo, stopping pagination.", e);
+                nextUrl = null;
+            }
         }
     }
     return results;
 }
 
+
 /**
  * Fetches all active findings for broad analysis, using a cache to avoid repeated API calls.
- * This version is resilient to individual record parsing errors by using safeParse.
  */
 async function getCachedAllFindings(): Promise<z.infer<typeof FindingSchema>[]> {
     const now = Date.now();
@@ -145,26 +141,20 @@ async function getCachedAllFindings(): Promise<z.infer<typeof FindingSchema>[]> 
         return findingsCache.findings;
     }
 
-    console.log("Cache is stale or empty. Fetching fresh findings from API.");
+    console.log("Cache is stale or empty. Fetching fresh findings from API for analysis.");
     const endpoint = 'findings/?active=true&duplicate=false&prefetch=test__engagement__product,test__test_type&limit=100';
+    
     const allRawFindings = await defectDojoFetchAll<any>(endpoint);
     
     const successfullyParsedFindings: z.infer<typeof FindingSchema>[] = [];
-    let errorCount = 0;
     
     for (const finding of allRawFindings) {
         const result = FindingSchema.safeParse(finding);
         if (result.success) {
             successfullyParsedFindings.push(result.data);
-        } else {
-            errorCount++;
         }
     }
     
-    if (errorCount > 0) {
-        console.log(`Skipped ${errorCount} of ${allRawFindings.length} findings due to data format issues.`);
-    }
-
     findingsCache.findings = successfullyParsedFindings;
     findingsCache.lastFetched = now;
     return findingsCache.findings;
