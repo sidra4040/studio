@@ -108,7 +108,7 @@ async function defectDojoFetchAll<T>(initialUrl: string): Promise<T[]> {
     }
     
     // Extract the prefetch value ONCE from the initial URL's query params.
-    const urlForPrefetch = new URL(initialUrl, API_URL);
+    const urlForPrefetch = new URL(initialUrl, 'http://localhost'); // base is irrelevant, just for parsing
     const prefetchParam = urlForPrefetch.searchParams.get('prefetch');
 
     while (nextUrl) {
@@ -170,6 +170,7 @@ async function getCachedAllFindings(): Promise<z.infer<typeof FindingSchema>[]> 
     }
     
     if (parsingErrors.length > 0) {
+        // This log is useful for debugging but won't be displayed as a huge JSON object in the terminal
         console.warn(`Encountered ${parsingErrors.length} findings with parsing errors. They will be excluded from the summary.`);
     }
 
@@ -577,3 +578,5 @@ export async function getTopRiskyComponents(limit: number = 5) {
         return { error: `Failed to analyze top risky components. Details: ${errorMessage}` };
     }
 }
+
+    
