@@ -112,28 +112,20 @@ async function defectDojoFetchAll<T>(initialUrl: string): Promise<T[]> {
     const prefetchParam = urlForPrefetch.searchParams.get('prefetch');
 
     while (nextUrl) {
-        const data = await defectDojoFetch(nextUrl);
+        const urlToFetch = new URL(nextUrl, API_URL); // Handles both absolute and relative next URLs
+
+        // DefectDojo's API drops the 'prefetch' param in the 'next' URL. We must add it back.
+        if (prefetchParam && !urlToFetch.searchParams.has('prefetch')) {
+            urlToFetch.searchParams.set('prefetch', prefetchParam);
+        }
+
+        const data = await defectDojoFetch(urlToFetch.href);
+
         if (data.results) {
             results = results.concat(data.results);
         }
         
         nextUrl = data.next;
-
-        // If there's a next page AND we had a prefetch parameter initially,
-        // we MUST add it to the next URL, because the DefectDojo API drops it.
-        if (nextUrl && prefetchParam) {
-            try {
-                // The 'next' URL from the API is a full URL.
-                const nextUrlObject = new URL(nextUrl); 
-                // Add the prefetch param back in.
-                nextUrlObject.searchParams.set('prefetch', prefetchParam);
-                // Use the modified URL for the next loop iteration.
-                nextUrl = nextUrlObject.href;
-            } catch (e) {
-                console.error("Failed to parse 'next' URL from DefectDojo, stopping pagination:", e);
-                nextUrl = null;
-            }
-        }
     }
     return results;
 }
@@ -161,7 +153,6 @@ async function getCachedAllFindings(): Promise<z.infer<typeof FindingSchema>[]> 
         if (result.success) {
             successfullyParsedFindings.push(result.data);
         } else {
-            // Log the error but don't crash the entire process
             parsingErrors.push({
                 findingId: finding.id,
                 errors: result.error.issues,
@@ -170,7 +161,6 @@ async function getCachedAllFindings(): Promise<z.infer<typeof FindingSchema>[]> 
     }
     
     if (parsingErrors.length > 0) {
-        // This log is useful for debugging but won't be displayed as a huge JSON object in the terminal
         console.warn(`Encountered ${parsingErrors.length} findings with parsing errors. They will be excluded from the summary.`);
     }
 
@@ -222,7 +212,8 @@ export async function getProductList() {
         const products = await defectDojoFetchAll<z.infer<typeof ProductSchema>>('products/');
         return products.map(p => p.name);
     } catch (error) {
-        return { error: error instanceof Error ? error.message : String(error) };
+        console.error("Failed to fetch product list", error);
+        return [];
     }
 }
 
