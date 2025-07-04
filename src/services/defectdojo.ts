@@ -51,7 +51,7 @@ const FindingSchema = z.object({
     cwe: z.number().nullable(),
     cve: z.string().nullable().optional(),
     cvssv3_score: z.union([z.string(), z.number()]).nullable().optional(),
-    test: z.union([TestObjectSchema, z.number()]).optional(),
+    test: z.union([TestObjectSchema, z.number()]).optional().nullable(),
 });
 
 const FindingListSchema = z.object({
@@ -69,13 +69,11 @@ const findingsCache = {
 
 
 // A helper to make authenticated requests to the DefectDojo API
-async function defectDojoFetch(endpoint: string, options: RequestInit = {}) {
-    if (!API_URL || !API_KEY) {
-        throw new Error('DefectDojo API URL or Key is not configured.');
+async function defectDojoFetch(url: string, options: RequestInit = {}) {
+    if (!API_KEY) {
+        throw new Error('DefectDojo API Key is not configured.');
     }
 
-    const url = endpoint.startsWith('http') ? endpoint : `${API_URL.replace(/\/$/, '')}/api/v2/${endpoint.replace(/^\//, '')}`;
-    
     console.log(`Querying DefectDojo: ${url}`);
 
     const response = await fetch(url, {
@@ -99,22 +97,20 @@ async function defectDojoFetch(endpoint: string, options: RequestInit = {}) {
  * Fetches all results from a paginated DefectDojo endpoint efficiently by following the 'next' link,
  * correctly preserving the 'prefetch' parameter across all pages.
  */
-async function defectDojoFetchAll<T>(initialUrl: string): Promise<T[]> {
-    let results: T[] = [];
-    let nextUrl: string | null = initialUrl;
-
+async function defectDojoFetchAll<T>(initialRelativeUrl: string): Promise<T[]> {
     if (!API_URL) {
         throw new Error("DEFECTDOJO_API_URL is not set.");
     }
-    
-    // Extract the prefetch value ONCE from the initial URL's query params.
-    const urlForPrefetch = new URL(initialUrl, 'http://localhost'); // base is irrelevant, just for parsing
-    const prefetchParam = urlForPrefetch.searchParams.get('prefetch');
+    let results: T[] = [];
+    let nextUrl: string | null = `${API_URL.replace(/\/$/, '')}/api/v2/${initialRelativeUrl.replace(/^\//, '')}`;
+
+    const initialUrlObject = new URL(nextUrl);
+    const prefetchParam = initialUrlObject.searchParams.get('prefetch');
 
     while (nextUrl) {
-        const urlToFetch = new URL(nextUrl, API_URL); // Handles both absolute and relative next URLs
+        const urlToFetch = new URL(nextUrl); // The 'next' from DefectDojo is a full URL.
 
-        // DefectDojo's API drops the 'prefetch' param in the 'next' URL. We must add it back.
+        // DefectDojo's API often drops the 'prefetch' param in the 'next' URL. We must add it back.
         if (prefetchParam && !urlToFetch.searchParams.has('prefetch')) {
             urlToFetch.searchParams.set('prefetch', prefetchParam);
         }
@@ -125,7 +121,7 @@ async function defectDojoFetchAll<T>(initialUrl: string): Promise<T[]> {
             results = results.concat(data.results);
         }
         
-        nextUrl = data.next;
+        nextUrl = data.next; // This is either a full URL or null.
     }
     return results;
 }
@@ -161,7 +157,7 @@ async function getCachedAllFindings(): Promise<z.infer<typeof FindingSchema>[]> 
     }
     
     if (parsingErrors.length > 0) {
-        console.warn(`Encountered ${parsingErrors.length} findings with parsing errors. They will be excluded from the summary.`);
+        console.warn(`Encountered ${parsingErrors.length} findings with parsing errors. They will be excluded from the summary. First error:`, parsingErrors[0]);
     }
 
     findingsCache.findings = successfullyParsedFindings;
@@ -241,6 +237,7 @@ interface GetFindingsParams {
  * Fetches findings using a direct, filtered API call for performance. Does not use the full cache.
  */
 export async function getFindings(params: GetFindingsParams): Promise<string> {
+    if (!API_URL) throw new Error("DefectDojo API URL is not configured.");
     try {
         const queryParams = new URLSearchParams();
         queryParams.set('duplicate', 'false');
@@ -274,7 +271,8 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
 
         queryParams.set('prefetch', 'test__engagement__product,test__test_type');
         
-        const data = await defectDojoFetch(`findings/?${queryParams.toString()}`);
+        const fullUrl = `${API_URL.replace(/\/$/, '')}/api/v2/findings/?${queryParams.toString()}`;
+        const data = await defectDojoFetch(fullUrl);
         
         const parsedFindings = FindingListSchema.safeParse(data);
 
@@ -314,6 +312,7 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
  * Gets vulnerability counts by severity for a specific product.
  */
 export async function getVulnerabilityCountBySeverity(productName: string) {
+    if (!API_URL) throw new Error("DefectDojo API URL is not configured.");
     const severities = ['Critical', 'High', 'Medium', 'Low', 'Info'];
     const counts: Record<string, number> = {};
     
@@ -325,7 +324,8 @@ export async function getVulnerabilityCountBySeverity(productName: string) {
 
         let total = 0;
         for (const severity of severities) {
-            const data = await defectDojoFetch(`findings/?test__engagement__product=${productId}&severity=${severity}&active=true&duplicate=false&limit=1`);
+            const fullUrl = `${API_URL.replace(/\/$/, '')}/api/v2/findings/?test__engagement__product=${productId}&severity=${severity}&active=true&duplicate=false&limit=1`;
+            const data = await defectDojoFetch(fullUrl);
             const count = FindingCountSchema.parse(data).count;
             counts[severity] = count;
             total += count;
@@ -340,9 +340,13 @@ export async function getVulnerabilityCountBySeverity(productName: string) {
 }
 
 export async function getOpenVsClosedCounts() {
+    if (!API_URL) throw new Error("DefectDojo API URL is not configured.");
     try {
-        const openData = await defectDojoFetch(`findings/?active=true&duplicate=false&limit=1`);
-        const closedData = await defectDojoFetch(`findings/?active=false&duplicate=false&limit=1`);
+        const openUrl = `${API_URL.replace(/\/$/, '')}/api/v2/findings/?active=true&duplicate=false&limit=1`;
+        const closedUrl = `${API_URL.replace(/\/$/, '')}/api/v2/findings/?active=false&duplicate=false&limit=1`;
+        
+        const openData = await defectDojoFetch(openUrl);
+        const closedData = await defectDojoFetch(closedUrl);
         
         return {
             open: FindingCountSchema.parse(openData).count,
@@ -383,8 +387,10 @@ export async function getProductVulnerabilitySummary() {
 }
 
 export async function getTotalFindingCount() {
+    if (!API_URL) throw new Error("DefectDojo API URL is not configured.");
     try {
-        const data = await defectDojoFetch('findings/?duplicate=false&limit=1');
+        const fullUrl = `${API_URL.replace(/\/$/, '')}/api/v2/findings/?duplicate=false&limit=1`;
+        const data = await defectDojoFetch(fullUrl);
         return { count: FindingCountSchema.parse(data).count };
     } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
