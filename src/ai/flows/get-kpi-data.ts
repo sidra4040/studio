@@ -1,3 +1,4 @@
+
 'use server';
 /**
  * @fileOverview An AI flow to retrieve and aggregate KPI data for the dashboard.
@@ -39,29 +40,44 @@ export async function getKpiData(): Promise<KpiData> {
             getOpenVsClosedCounts(),
         ]);
 
+        if (!productSummary || Object.keys(productSummary).length === 0) {
+            console.warn("Product summary from DefectDojo was empty. Returning default KPI data.");
+            // Return empty/default data
+            return {
+                vulnerabilitiesBySeverity: [
+                    { severity: 'Critical', count: 0 },
+                    { severity: 'High', count: 0 },
+                    { severity: 'Medium', count: 0 },
+                    { severity: 'Low', count: 0 },
+                    { severity: 'Info', count: 0 },
+                ],
+                openVsClosed: [
+                    { name: 'Open', value: 0, fill: 'hsl(var(--destructive))' },
+                    { name: 'Closed', value: 0, fill: 'hsl(var(--chart-2))' },
+                ],
+                topVulnerableProducts: [],
+            };
+        }
+
+
         // Calculate overall severity counts from the product summary
         const severityCounts: Record<string, number> = { Critical: 0, High: 0, Medium: 0, Low: 0, Info: 0 };
-        if (productSummary && Object.keys(productSummary).length > 0) {
-            Object.values(productSummary).forEach(product => {
-                severityCounts.Critical += product.Critical || 0;
-                severityCounts.High += product.High || 0;
-                severityCounts.Medium += product.Medium || 0;
-                severityCounts.Low += product.Low || 0;
-                severityCounts.Info += product.Info || 0;
-            });
-        }
-
+        Object.values(productSummary).forEach(product => {
+            severityCounts.Critical += product.Critical || 0;
+            severityCounts.High += product.High || 0;
+            severityCounts.Medium += product.Medium || 0;
+            severityCounts.Low += product.Low || 0;
+            severityCounts.Info += product.Info || 0;
+        });
 
         // Calculate top 5 vulnerable products from the summary
-        let topProducts: { product: string; vulnerabilities: number; }[] = [];
-        if (productSummary && Object.keys(productSummary).length > 0) {
-            const productTotals = Object.entries(productSummary).map(([product, counts]) => ({
-                product,
-                vulnerabilities: counts.Total || 0,
-            }));
-            productTotals.sort((a, b) => b.vulnerabilities - a.vulnerabilities);
-            topProducts = productTotals.slice(0, 5);
-        }
+        const productTotals = Object.entries(productSummary).map(([product, counts]) => ({
+            product,
+            vulnerabilities: counts.Total || 0,
+        }));
+        productTotals.sort((a, b) => b.vulnerabilities - a.vulnerabilities);
+        const topProducts = productTotals.slice(0, 5);
+
 
         const kpiData: KpiData = {
             vulnerabilitiesBySeverity: Object.entries(severityCounts).map(([severity, count]) => ({
@@ -75,7 +91,7 @@ export async function getKpiData(): Promise<KpiData> {
             topVulnerableProducts: topProducts,
         };
         
-        console.log("Successfully fetched KPI data.");
+        console.log("Successfully fetched and processed KPI data.");
         return kpiData;
     } catch (error) {
         console.error("Failed to fetch KPI data from DefectDojo:", error);

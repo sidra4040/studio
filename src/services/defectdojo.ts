@@ -66,7 +66,6 @@ async function defectDojoFetch(url: string, options: RequestInit = {}) {
         throw new Error('DefectDojo API URL or Key is not configured.');
     }
 
-    // This handles both full URLs from pagination and relative URLs for initial calls.
     const fullUrl = url.startsWith('http') ? url : `${API_URL.replace(/\/$/, '')}/api/v2/${url.replace(/^\//, '')}`;
     
     console.log(`Querying DefectDojo: ${fullUrl}`);
@@ -78,6 +77,7 @@ async function defectDojoFetch(url: string, options: RequestInit = {}) {
             'Content-Type': 'application/json',
             'Authorization': `Token ${API_KEY}`,
         },
+        cache: 'no-store', // Ensure fresh data is fetched
     });
 
     if (!response.ok) {
@@ -92,32 +92,38 @@ async function defectDojoFetch(url: string, options: RequestInit = {}) {
 /**
  * Fetches all results from a paginated DefectDojo endpoint, ensuring that
  * essential query parameters (like `prefetch`) are preserved across all pages.
- * This is the definitive fix for the data loss issue.
  */
 async function defectDojoFetchAll<T>(initialRelativeUrl: string): Promise<T[]> {
     let results: T[] = [];
     let nextUrl: string | null = initialRelativeUrl;
-
-    // Extract the prefetch parameter from the initial URL to ensure it's added back to every subsequent request if the API drops it.
-    const prefetchParam = new URLSearchParams(initialRelativeUrl.split('?')[1]).get('prefetch');
+    
+    // Extract prefetch param to re-apply it if the API drops it on subsequent pages
+    const initialUrlObject = new URL(`${API_URL}/api/v2/${initialRelativeUrl}`);
+    const prefetchParam = initialUrlObject.searchParams.get('prefetch');
 
     while (nextUrl) {
-        let urlToFetch = nextUrl;
+        let urlToFetch: string;
+
+        if (nextUrl.startsWith('http')) {
+            urlToFetch = nextUrl;
+        } else {
+            // This handles the very first request which is a relative path
+            urlToFetch = `${API_URL}/api/v2/${nextUrl.replace(/^\//, '')}`;
+        }
         
-        // This is the critical check. If the paginated URL is a full URL and is missing the prefetch parameter, this adds it back.
-        if (urlToFetch.startsWith('http') && prefetchParam && !urlToFetch.includes('prefetch=')) {
-            const urlObj = new URL(urlToFetch);
+        const urlObj = new URL(urlToFetch);
+
+        // **CRITICAL FIX**: Ensure prefetch parameter is always present. The DD API sometimes drops it.
+        if (prefetchParam && !urlObj.searchParams.has('prefetch')) {
             urlObj.searchParams.set('prefetch', prefetchParam);
-            urlToFetch = urlObj.href;
         }
 
-        const data = await defectDojoFetch(urlToFetch);
-
+        const data = await defectDojoFetch(urlObj.href);
         if (data.results) {
             results = results.concat(data.results);
         }
         
-        nextUrl = data.next; 
+        nextUrl = data.next;
     }
     return results;
 }
