@@ -51,6 +51,7 @@ const FindingSchema = z.object({
     cwe: z.number().nullable(),
     cve: z.string().nullable().optional(),
     cvssv3_score: z.union([z.string(), z.number()]).nullable().optional(),
+    // The 'test' can be a number ID or a full object, especially with prefetch.
     test: z.union([TestObjectSchema, z.number()]).optional().nullable(),
 });
 
@@ -70,8 +71,8 @@ const findingsCache = {
 
 // A helper to make authenticated requests to the DefectDojo API
 async function defectDojoFetch(url: string, options: RequestInit = {}) {
-    if (!API_KEY) {
-        throw new Error('DefectDojo API Key is not configured.');
+    if (!API_URL || !API_KEY) {
+        throw new Error('DefectDojo API URL or Key is not configured.');
     }
 
     console.log(`Querying DefectDojo: ${url}`);
@@ -101,27 +102,28 @@ async function defectDojoFetchAll<T>(initialRelativeUrl: string): Promise<T[]> {
     if (!API_URL) {
         throw new Error("DEFECTDOJO_API_URL is not set.");
     }
-    let results: T[] = [];
-    let nextUrl: string | null = `${API_URL.replace(/\/$/, '')}/api/v2/${initialRelativeUrl.replace(/^\//, '')}`;
+    const fullInitialUrl = new URL(`${API_URL.replace(/\/$/, '')}/api/v2/${initialRelativeUrl.replace(/^\//, '')}`);
+    const prefetchParam = fullInitialUrl.searchParams.get('prefetch');
 
-    const initialUrlObject = new URL(nextUrl);
-    const prefetchParam = initialUrlObject.searchParams.get('prefetch');
+    let results: T[] = [];
+    let nextUrl: string | null = fullInitialUrl.href;
 
     while (nextUrl) {
-        const urlToFetch = new URL(nextUrl); // The 'next' from DefectDojo is a full URL.
+        const urlToFetch = new URL(nextUrl);
 
         // DefectDojo's API often drops the 'prefetch' param in the 'next' URL. We must add it back.
         if (prefetchParam && !urlToFetch.searchParams.has('prefetch')) {
             urlToFetch.searchParams.set('prefetch', prefetchParam);
         }
-
+        
         const data = await defectDojoFetch(urlToFetch.href);
 
         if (data.results) {
             results = results.concat(data.results);
         }
         
-        nextUrl = data.next; // This is either a full URL or null.
+        // The API provides the *full* URL for the next page, or null.
+        nextUrl = data.next; 
     }
     return results;
 }
@@ -133,10 +135,11 @@ async function defectDojoFetchAll<T>(initialRelativeUrl: string): Promise<T[]> {
 async function getCachedAllFindings(): Promise<z.infer<typeof FindingSchema>[]> {
     const now = Date.now();
     if (findingsCache.findings.length > 0 && now - findingsCache.lastFetched < findingsCache.ttl) {
+        console.log("Returning findings from cache.");
         return findingsCache.findings;
     }
 
-    console.log("Cache is stale or empty. Fetching fresh findings from API.");
+    console.log("Cache is stale or empty. Fetching all active findings from API.");
     const endpoint = 'findings/?active=true&duplicate=false&prefetch=test__engagement__product,test__test_type&limit=100';
     
     const allRawFindings = await defectDojoFetchAll<any>(endpoint);
@@ -162,6 +165,7 @@ async function getCachedAllFindings(): Promise<z.infer<typeof FindingSchema>[]> 
 
     findingsCache.findings = successfullyParsedFindings;
     findingsCache.lastFetched = now;
+    console.log(`Successfully fetched and parsed ${successfullyParsedFindings.length} findings.`);
     return findingsCache.findings;
 }
 
@@ -206,7 +210,7 @@ async function getProductIDByName(productName: string): Promise<number | null> {
 export async function getProductList() {
     try {
         const products = await defectDojoFetchAll<z.infer<typeof ProductSchema>>('products/');
-        return products.map(p => p.name);
+        return products.map(p => p.name).filter(p => !!p); // Ensure no null/empty names
     } catch (error) {
         console.error("Failed to fetch product list", error);
         return [];
@@ -364,6 +368,7 @@ export async function getProductVulnerabilitySummary() {
         const summary: Record<string, Record<string, number>> = {};
         
         for (const finding of allFindings) {
+            // Ensure the finding has the full product details from prefetch
             if (finding.test && typeof finding.test === 'object' && finding.test.engagement?.product?.name) {
                 const productName = finding.test.engagement.product.name;
 
@@ -575,5 +580,3 @@ export async function getTopRiskyComponents(limit: number = 5) {
         return { error: `Failed to analyze top risky components. Details: ${errorMessage}` };
     }
 }
-
-    
