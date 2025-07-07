@@ -36,7 +36,7 @@ export type KpiData = z.infer<typeof KpiDataSchema>;
 export async function getKpiData(): Promise<KpiData> {
     try {
         console.log("Fetching live KPI data from DefectDojo...");
-        // Fetch all data in parallel, including the product list.
+        // Fetch all data in parallel, including the product list for the dropdown.
         const [productSummary, openClosedData, productListData] = await Promise.all([
             getProductVulnerabilitySummary(),
             getOpenVsClosedCounts(),
