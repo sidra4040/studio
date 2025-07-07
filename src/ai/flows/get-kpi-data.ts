@@ -10,7 +10,7 @@
 import { z } from 'genkit';
 import { 
     getOpenVsClosedCounts,
-    getProductVulnerabilitySummary
+    getCachedAllFindings
 } from '@/services/defectdojo';
 
 const KpiDataSchema = z.object({
@@ -34,15 +34,15 @@ export type KpiData = z.infer<typeof KpiDataSchema>;
 export async function getKpiData(): Promise<KpiData> {
     try {
         console.log("Fetching live KPI data from DefectDojo...");
+        
         // Fetch all data in parallel
-        const [productSummary, openClosedCounts] = await Promise.all([
-            getProductVulnerabilitySummary(),
+        const [allFindings, openClosedCounts] = await Promise.all([
+            getCachedAllFindings(),
             getOpenVsClosedCounts(),
         ]);
 
-        if (!productSummary || Object.keys(productSummary).length === 0) {
-            console.warn("Product summary from DefectDojo was empty. Returning default KPI data.");
-            // Return empty/default data
+        if (!allFindings || allFindings.length === 0) {
+            console.warn("No findings available from cache to generate KPI data. Returning default data.");
             return {
                 vulnerabilitiesBySeverity: [
                     { severity: 'Critical', count: 0 },
@@ -58,19 +58,26 @@ export async function getKpiData(): Promise<KpiData> {
                 topVulnerableProducts: [],
             };
         }
+        
+        console.log(`Processing ${allFindings.length} findings for KPI dashboard.`);
 
-
-        // Calculate overall severity counts from the product summary
         const severityCounts: Record<string, number> = { Critical: 0, High: 0, Medium: 0, Low: 0, Info: 0 };
-        Object.values(productSummary).forEach(product => {
-            severityCounts.Critical += product.Critical || 0;
-            severityCounts.High += product.High || 0;
-            severityCounts.Medium += product.Medium || 0;
-            severityCounts.Low += product.Low || 0;
-            severityCounts.Info += product.Info || 0;
-        });
+        const productSummary: Record<string, { Total: number }> = {};
 
-        // Calculate top 5 vulnerable products from the summary
+        for (const finding of allFindings) {
+            if (severityCounts[finding.severity] !== undefined) {
+                severityCounts[finding.severity]++;
+            }
+
+            if (finding.test && typeof finding.test === 'object' && finding.test.engagement?.product?.name) {
+                const productName = finding.test.engagement.product.name;
+                if (!productSummary[productName]) {
+                    productSummary[productName] = { Total: 0 };
+                }
+                productSummary[productName].Total++;
+            }
+        }
+
         const productTotals = Object.entries(productSummary).map(([product, counts]) => ({
             product,
             vulnerabilities: counts.Total || 0,
@@ -91,11 +98,11 @@ export async function getKpiData(): Promise<KpiData> {
             topVulnerableProducts: topProducts,
         };
         
-        console.log("Successfully fetched and processed KPI data.");
+        console.log("Successfully fetched and processed KPI data.", JSON.stringify(kpiData.vulnerabilitiesBySeverity));
         return kpiData;
+
     } catch (error) {
         console.error("Failed to fetch KPI data from DefectDojo:", error);
-        // Return empty/default data on error so the page doesn't crash
         return {
             vulnerabilitiesBySeverity: [
                 { severity: 'Critical', count: 0 },

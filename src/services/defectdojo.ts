@@ -31,10 +31,6 @@ const TestObjectSchema = z.object({
     }).optional().nullable(),
 });
 
-// THIS IS A CRITICAL FIX: The Zod schema must be flexible enough to handle cases where
-// the 'test' field is just a number (ID) instead of a full object. This happens when
-// prefetch fails or is not used. Making it a union type prevents the entire dataset
-// from being discarded due to parsing errors.
 const FindingSchema = z.object({
     id: z.number(),
     title: z.string(),
@@ -97,14 +93,12 @@ async function defectDojoFetchAll<T>(initialRelativeUrl: string): Promise<T[]> {
     let results: T[] = [];
     let nextUrl: string | null = initialRelativeUrl;
     
-    // Extract prefetch param to re-apply it if the API drops it on subsequent pages
     const initialUrlObject = new URL(`${API_URL}/api/v2/${initialRelativeUrl}`);
     const prefetchParam = initialUrlObject.searchParams.get('prefetch');
 
     while (nextUrl) {
         let urlToFetch: string;
 
-        // Smart check to handle both full URLs and relative paths
         if (nextUrl.startsWith('http')) {
             urlToFetch = nextUrl;
         } else {
@@ -113,7 +107,6 @@ async function defectDojoFetchAll<T>(initialRelativeUrl: string): Promise<T[]> {
         
         const urlObj = new URL(urlToFetch);
 
-        // **CRITICAL FIX**: Ensure prefetch parameter is always present. The DD API sometimes drops it.
         if (prefetchParam && !urlObj.searchParams.has('prefetch')) {
             urlObj.searchParams.set('prefetch', prefetchParam);
         }
@@ -128,7 +121,7 @@ async function defectDojoFetchAll<T>(initialRelativeUrl: string): Promise<T[]> {
     return results;
 }
 
-async function getCachedAllFindings(): Promise<z.infer<typeof FindingSchema>[]> {
+export async function getCachedAllFindings(): Promise<z.infer<typeof FindingSchema>[]> {
     const now = Date.now();
     if (findingsCache.findings.length > 0 && now - findingsCache.lastFetched < findingsCache.ttl) {
         console.log("Returning findings from cache.");
@@ -323,7 +316,7 @@ export async function getProductVulnerabilitySummary() {
     try {
         const allFindings = await getCachedAllFindings();
         if (!allFindings || allFindings.length === 0) {
-            console.warn("No findings available to generate product summary.");
+            console.warn("Product summary from DefectDojo was empty. Returning default KPI data.");
             return {};
         }
 
