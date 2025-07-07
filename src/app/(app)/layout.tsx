@@ -6,6 +6,7 @@ import { usePathname } from 'next/navigation';
 import {
   BotMessageSquare,
   Settings,
+  LayoutDashboard,
 } from 'lucide-react';
 import {
   SidebarProvider,
@@ -32,6 +33,11 @@ const AppLayout = ({ children }: { children: React.ReactNode }) => {
       href: '/chat',
       label: 'DojoGPT Chat',
       icon: BotMessageSquare,
+    },
+    {
+      href: '/kpis',
+      label: 'KPI Dashboard',
+      icon: LayoutDashboard,
     },
   ];
 
