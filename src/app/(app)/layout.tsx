@@ -4,9 +4,7 @@ import React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
-  BarChart3,
   BotMessageSquare,
-  SearchCode,
   Settings,
 } from 'lucide-react';
 import {
@@ -34,11 +32,6 @@ const AppLayout = ({ children }: { children: React.ReactNode }) => {
       href: '/chat',
       label: 'DojoGPT Chat',
       icon: BotMessageSquare,
-    },
-    {
-      href: '/query-generator',
-      label: 'AI Query Generator',
-      icon: SearchCode,
     },
   ];
 
