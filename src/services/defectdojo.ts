@@ -18,17 +18,20 @@ const FindingCountSchema = z.object({
     count: z.number(),
 });
 
+const EngagementSchema = z.object({
+    id: z.number(),
+    name: z.string(),
+    product: z.object({ id: z.number(), name: z.string() }).optional().nullable(),
+    product_id: z.number().optional().nullable(),
+});
+
 const TestObjectSchema = z.object({
     id: z.number(),
     test_type: z.object({ 
         id: z.number(),
         name: z.string() 
     }).optional().nullable(),
-    engagement: z.object({ 
-        id: z.number(),
-        name: z.string(),
-        product: z.object({ id: z.number(), name: z.string() }).optional().nullable()
-    }).optional().nullable(),
+    engagement: EngagementSchema.optional().nullable(),
 });
 
 const FindingSchema = z.object({
@@ -41,8 +44,9 @@ const FindingSchema = z.object({
     cwe: z.number().nullable(),
     cve: z.string().nullable().optional(),
     cvssv3_score: z.union([z.string(), z.number()]).nullable().optional(),
-    test: z.union([TestObjectSchema, z.number()]).optional().nullable(),
+    test: TestObjectSchema.optional().nullable(),
 });
+
 
 const FindingListSchema = z.object({
     count: z.number(),
@@ -278,17 +282,29 @@ export async function getVulnerabilityCountsByProduct(productName: string): Prom
     const counts: Record<string, number> = { Critical: 0, High: 0, Medium: 0, Low: 0, Info: 0 };
     
     try {
-        const productId = await getProductIDByName(productName);
-        if (!productId) {
+        const targetProductId = await getProductIDByName(productName);
+        if (!targetProductId) {
             console.error(`Product '${productName}' not found.`);
             return counts;
         }
 
         // We can use the cached findings to avoid another network call
         const allFindings = await getCachedAllFindings();
-        const productFindings = allFindings.filter(f => 
-            f.test && typeof f.test === 'object' && f.test.engagement?.product?.id === productId
-        );
+        
+        const productFindings = allFindings.filter(f => {
+            const engagement = f.test?.engagement;
+            if (!engagement) return false;
+
+            // Check direct product link first
+            if (engagement.product?.id === targetProductId) {
+                return true;
+            }
+            // Fallback to product_id on engagement
+            if (engagement.product_id === targetProductId) {
+                return true;
+            }
+            return false;
+        });
 
         for (const finding of productFindings) {
             if (counts[finding.severity] !== undefined) {
@@ -327,12 +343,21 @@ export async function getProductVulnerabilitySummary() {
         if (!allFindings || allFindings.length === 0) {
             return {};
         }
+        
+        const PRODUCT_ID_MAP: Record<number, string> = Object.values(PRODUCT_MAP).reduce((acc, product) => {
+            acc[product.id] = product.name;
+            return acc;
+        }, {} as Record<number, string>);
 
         const summary: Record<string, Record<string, number>> = {};
         
         for (const finding of allFindings) {
-            if (finding.test && typeof finding.test === 'object' && finding.test.engagement?.product?.name) {
-                const productName = finding.test.engagement.product.name;
+            let productName: string | undefined | null = finding.test?.engagement?.product?.name;
+            if (!productName && finding.test?.engagement?.product_id) {
+                productName = PRODUCT_ID_MAP[finding.test.engagement.product_id];
+            }
+
+            if (productName) {
                 if (!summary[productName]) {
                     summary[productName] = { Critical: 0, High: 0, Medium: 0, Low: 0, Info: 0, Total: 0 };
                 }
@@ -366,11 +391,20 @@ export async function getTopCriticalVulnerabilityPerProduct(): Promise<string> {
         const allFindings = await getCachedAllFindings();
         const criticalFindings = allFindings.filter(f => f.severity === 'Critical');
         
+        const PRODUCT_ID_MAP: Record<number, string> = Object.values(PRODUCT_MAP).reduce((acc, product) => {
+            acc[product.id] = product.name;
+            return acc;
+        }, {} as Record<number, string>);
+        
         const vulnerabilitiesByProduct = criticalFindings.reduce((acc, f) => {
-            if (typeof f.test !== 'object' || !f.test?.engagement?.product?.name) {
+            let productName: string | undefined | null = f.test?.engagement?.product?.name;
+            if (!productName && f.test?.engagement?.product_id) {
+                productName = PRODUCT_ID_MAP[f.test.engagement.product_id];
+            }
+
+            if (!productName) {
                 return acc;
             }
-            const productName = f.test.engagement.product.name;
             
             const currentVulnerability = acc[productName];
             const newVulnerability = {

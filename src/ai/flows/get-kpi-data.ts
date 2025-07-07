@@ -13,6 +13,7 @@ import {
     getCachedAllFindings,
     getProductList
 } from '@/services/defectdojo';
+import { PRODUCT_MAP } from '@/services/defectdojo-maps';
 
 const KpiDataSchema = z.object({
     vulnerabilitiesBySeverity: z.array(z.object({
@@ -35,6 +36,13 @@ const KpiDataSchema = z.object({
 });
 
 export type KpiData = z.infer<typeof KpiDataSchema>;
+
+// Create a reverse map for ID to Name lookups, this is more efficient
+const PRODUCT_ID_MAP: Record<number, string> = Object.values(PRODUCT_MAP).reduce((acc, product) => {
+    acc[product.id] = product.name;
+    return acc;
+}, {} as Record<number, string>);
+
 
 export async function getKpiData(): Promise<KpiData> {
     try {
@@ -76,8 +84,14 @@ export async function getKpiData(): Promise<KpiData> {
                 severityCounts[finding.severity]++;
             }
 
-            if (finding.test && typeof finding.test === 'object' && finding.test.engagement?.product?.name) {
-                const productName = finding.test.engagement.product.name;
+            let productName: string | undefined | null = finding.test?.engagement?.product?.name;
+            
+            // Fallback logic inspired by the Python script
+            if (!productName && finding.test?.engagement?.product_id) {
+                productName = PRODUCT_ID_MAP[finding.test.engagement.product_id];
+            }
+
+            if (productName) {
                 if (!productSummary[productName]) {
                     productSummary[productName] = { Total: 0 };
                 }
