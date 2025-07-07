@@ -7,7 +7,7 @@
 import { z } from 'genkit';
 import { getVulnerabilityCountsByProduct } from '@/services/defectdojo';
 
-export const ProductKpiDataSchema = z.object({
+const ProductKpiDataSchema = z.object({
     vulnerabilitiesBySeverity: z.array(z.object({
         severity: z.string(),
         count: z.number(),
