@@ -23,12 +23,12 @@ const TestObjectSchema = z.object({
     test_type: z.object({ 
         id: z.number(),
         name: z.string() 
-    }).optional(),
+    }).optional().nullable(),
     engagement: z.object({ 
         id: z.number(),
         name: z.string(),
-        product: z.object({ id: z.number(), name: z.string() })
-    }).optional(),
+        product: z.object({ id: z.number(), name: z.string() }).nullable()
+    }).optional().nullable(),
 });
 
 // THIS IS A CRITICAL FIX: The Zod schema must be flexible enough to handle cases where
@@ -104,11 +104,11 @@ async function defectDojoFetchAll<T>(initialRelativeUrl: string): Promise<T[]> {
     while (nextUrl) {
         let urlToFetch: string;
 
+        // Smart check to handle both full URLs and relative paths
         if (nextUrl.startsWith('http')) {
             urlToFetch = nextUrl;
         } else {
-            // This handles the very first request which is a relative path
-            urlToFetch = `${API_URL}/api/v2/${nextUrl.replace(/^\//, '')}`;
+            urlToFetch = `${API_URL.replace(/\/$/, '')}/api/v2/${nextUrl.replace(/^\//, '')}`;
         }
         
         const urlObj = new URL(urlToFetch);
@@ -162,7 +162,7 @@ async function getCachedAllFindings(): Promise<z.infer<typeof FindingSchema>[]> 
     findingsCache.findings = successfullyParsedFindings;
     findingsCache.lastFetched = now;
     console.log(`Successfully fetched and parsed ${successfullyParsedFindings.length} findings.`);
-    return findingsCache.findings;
+    return successfullyParsedFindings;
 }
 
 function cvssToNumber(score: string | number | null | undefined): number {
@@ -322,11 +322,14 @@ export async function getOpenVsClosedCounts() {
 export async function getProductVulnerabilitySummary() {
     try {
         const allFindings = await getCachedAllFindings();
+        if (!allFindings || allFindings.length === 0) {
+            console.warn("No findings available to generate product summary.");
+            return {};
+        }
+
         const summary: Record<string, Record<string, number>> = {};
         
         for (const finding of allFindings) {
-            // THIS IS THE CRITICAL CHECK: only process findings where we successfully
-            // prefetched the full product details.
             if (finding.test && typeof finding.test === 'object' && finding.test.engagement?.product?.name) {
                 const productName = finding.test.engagement.product.name;
                 if (!summary[productName]) {
