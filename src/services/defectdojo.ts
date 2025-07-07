@@ -94,38 +94,28 @@ async function defectDojoFetch(url: string, options: RequestInit = {}) {
  * essential query parameters (like `prefetch`) are preserved across all pages.
  */
 async function defectDojoFetchAll<T>(initialRelativeUrl: string): Promise<T[]> {
-    let results: T[] = [];
+    const allResults: T[] = [];
     let nextUrl: string | null = initialRelativeUrl;
-    
-    const initialUrlObject = new URL(`${API_URL}/api/v2/${initialRelativeUrl}`);
-    const prefetchParam = initialUrlObject.searchParams.get('prefetch');
 
     while (nextUrl) {
-        let urlToFetch: string;
+        // Our `defectDojoFetch` helper can handle both relative URLs (for the first call)
+        // and absolute URLs (for subsequent calls from `data.next`).
+        const data = await defectDojoFetch(nextUrl);
 
-        // The 'next' URL from DefectDojo is a full URL. Use it directly.
-        // Otherwise, construct the full URL from the relative path.
-        if (nextUrl.startsWith('http')) {
-            urlToFetch = nextUrl;
+        const results = data.results as T[] | undefined;
+
+        if (results && results.length > 0) {
+            allResults.push(...results);
+        }
+
+        // Move to the next page, or break if we're done
+        if (data.next) {
+            nextUrl = data.next;
         } else {
-            urlToFetch = `${API_URL.replace(/\/$/, '')}/api/v2/${nextUrl.replace(/^\//, '')}`;
+            break;
         }
-        
-        const urlObj = new URL(urlToFetch);
-
-        // Ensure the prefetch parameter is present on all subsequent requests if it was in the initial one.
-        if (prefetchParam && !urlObj.searchParams.has('prefetch')) {
-            urlObj.searchParams.set('prefetch', prefetchParam);
-        }
-
-        const data = await defectDojoFetch(urlObj.href);
-        if (data.results) {
-            results = results.concat(data.results);
-        }
-        
-        nextUrl = data.next;
     }
-    return results;
+    return allResults;
 }
 
 export async function getCachedAllFindings(): Promise<z.infer<typeof FindingSchema>[]> {
@@ -292,9 +282,8 @@ export async function getVulnerabilityCountsByProduct(productName: string): Prom
         const allFindings = await getCachedAllFindings();
         
         const productFindings = allFindings.filter(f => {
-            const engagement = f.test?.engagement;
-            if (!engagement) return false;
-
+            if (typeof f.test !== 'object' || !f.test || !f.test.engagement) return false;
+            const engagement = f.test.engagement;
             // Check direct product link first
             if (engagement.product?.id === targetProductId) {
                 return true;
@@ -352,8 +341,10 @@ export async function getProductVulnerabilitySummary() {
         const summary: Record<string, Record<string, number>> = {};
         
         for (const finding of allFindings) {
-            let productName: string | undefined | null = finding.test?.engagement?.product?.name;
-            if (!productName && finding.test?.engagement?.product_id) {
+            if (typeof finding.test !== 'object' || !finding.test || !finding.test.engagement) continue;
+            
+            let productName: string | undefined | null = finding.test.engagement.product?.name;
+            if (!productName && finding.test.engagement.product_id) {
                 productName = PRODUCT_ID_MAP[finding.test.engagement.product_id];
             }
 
@@ -397,8 +388,10 @@ export async function getTopCriticalVulnerabilityPerProduct(): Promise<string> {
         }, {} as Record<number, string>);
         
         const vulnerabilitiesByProduct = criticalFindings.reduce((acc, f) => {
-            let productName: string | undefined | null = f.test?.engagement?.product?.name;
-            if (!productName && f.test?.engagement?.product_id) {
+            if (typeof f.test !== 'object' || !f.test || !f.test.engagement) return acc;
+
+            let productName: string | undefined | null = f.test.engagement.product?.name;
+            if (!productName && f.test.engagement.product_id) {
                 productName = PRODUCT_ID_MAP[f.test.engagement.product_id];
             }
 
