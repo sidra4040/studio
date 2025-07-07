@@ -40,11 +40,6 @@ const AppLayout = ({ children }: { children: React.ReactNode }) => {
       label: 'AI Query Generator',
       icon: SearchCode,
     },
-    {
-      href: '/kpis',
-      label: 'KPI Dashboard',
-      icon: BarChart3,
-    },
   ];
 
   return (
