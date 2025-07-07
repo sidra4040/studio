@@ -28,6 +28,10 @@ const KpiDataSchema = z.object({
         product: z.string(),
         vulnerabilities: z.number(),
     })).describe('Data for top 5 vulnerable products chart.'),
+    productList: z.array(z.object({
+        id: z.number(),
+        name: z.string(),
+    })).describe('A list of all products for the filter dropdown.')
 });
 
 export type KpiData = z.infer<typeof KpiDataSchema>;
@@ -36,34 +40,47 @@ export async function getKpiData(): Promise<KpiData> {
     try {
         console.log("Fetching live KPI data from DefectDojo...");
         
-        // Fetch data for dynamic parts of the dashboard
-        const [allFindings, openClosedCounts] = await Promise.all([
+        const [allFindings, openClosedCounts, products] = await Promise.all([
             getCachedAllFindings(),
             getOpenVsClosedCounts(),
+            getProductList(),
         ]);
 
         const severityCounts: Record<string, number> = { Critical: 0, High: 0, Medium: 0, Low: 0, Info: 0 };
-
+        const productCounts: Record<string, number> = {};
+        
         if (allFindings && allFindings.length > 0) {
             console.log(`Processing ${allFindings.length} findings for KPI dashboard.`);
             for (const finding of allFindings) {
+                // Severity counts
                 if (severityCounts[finding.severity] !== undefined) {
                     severityCounts[finding.severity]++;
                 }
+
+                // Product counts
+                let productName: string | undefined | null = finding.test?.engagement?.product?.name;
+                if (!productName && finding.test?.engagement?.product_id) {
+                     const productInfo = products.find(p => p.id === finding.test?.engagement?.product_id);
+                     if (productInfo) {
+                        productName = productInfo.name;
+                     }
+                }
+                
+                if (productName) {
+                    if (!productCounts[productName]) {
+                        productCounts[productName] = 0;
+                    }
+                    productCounts[productName]++;
+                }
             }
         } else {
-             console.warn("No findings available from cache to generate KPI data. Severity counts will be zero.");
+             console.warn("No findings available from cache to generate KPI data. All counts will be zero.");
         }
         
-        // Use hardcoded data for the Top 5 Vulnerable Products as requested
-        const topProducts = [
-            { product: 'MyCareLink Relay', vulnerabilities: 6276 },
-            { product: 'Carelink Network', vulnerabilities: 1239 },
-            { product: 'MyCareLink Patient Monitor', vulnerabilities: 547 },
-            { product: 'CLEM', vulnerabilities: 269 },
-            { product: 'MCLS', vulnerabilities: 269 },
-        ];
-
+        const topProducts = Object.entries(productCounts)
+            .map(([product, vulnerabilities]) => ({ product, vulnerabilities }))
+            .sort((a, b) => b.vulnerabilities - a.vulnerabilities)
+            .slice(0, 5);
 
         const kpiData: KpiData = {
             vulnerabilitiesBySeverity: Object.entries(severityCounts).map(([severity, count]) => ({
@@ -75,14 +92,15 @@ export async function getKpiData(): Promise<KpiData> {
                 { name: 'Closed', value: openClosedCounts.closed, fill: 'hsl(var(--chart-2))' },
             ],
             topVulnerableProducts: topProducts,
+            productList: products,
         };
         
-        console.log("Successfully processed KPI data with static top products.");
+        console.log("Successfully fetched and processed KPI data.");
         return kpiData;
 
     } catch (error) {
         console.error("Failed to fetch KPI data from DefectDojo:", error);
-        // Return default data on error, with the static top products
+        // Return default data on error
         return {
             vulnerabilitiesBySeverity: [
                 { severity: 'Critical', count: 0 },
@@ -95,13 +113,8 @@ export async function getKpiData(): Promise<KpiData> {
                 { name: 'Open', value: 0, fill: 'hsl(var(--destructive))' },
                 { name: 'Closed', value: 0, fill: 'hsl(var(--chart-2))' },
             ],
-            topVulnerableProducts: [
-                { product: 'MyCareLink Relay', vulnerabilities: 6276 },
-                { product: 'Carelink Network', vulnerabilities: 1239 },
-                { product: 'MyCareLink Patient Monitor', vulnerabilities: 547 },
-                { product: 'CLEM', vulnerabilities: 269 },
-                { product: 'MCLS', vulnerabilities: 269 },
-            ],
+            topVulnerableProducts: [],
+            productList: [],
         };
     }
 }

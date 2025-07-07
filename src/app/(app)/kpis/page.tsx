@@ -1,12 +1,14 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
-import { getKpiData } from '@/app/actions';
+import { getKpiData, getProductKpiData } from '@/app/actions';
 import type { KpiData } from '@/ai/flows/get-kpi-data';
-import { TrendingUp, ShieldCheck, ShieldAlert, ShieldHalf, ShieldQuestion, Shield } from 'lucide-react';
+import type { ProductKpiData } from '@/ai/flows/get-product-kpi-data';
+import { TrendingUp, ShieldCheck, ShieldAlert, ShieldHalf, ShieldQuestion, Shield, Component, PackageSearch } from 'lucide-react';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 const CustomTooltip = ({ active, payload, label }: any) => {
   if (active && payload && payload.length) {
@@ -36,9 +38,58 @@ const SEVERITY_ICONS: { [key: string]: React.ElementType } = {
   Info: ShieldQuestion,
 };
 
+function KpiSkeleton() {
+  return (
+    <div className="space-y-6">
+      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-5">
+          {Array.from({ length: 5 }).map((_, index) => (
+              <Card key={index}>
+                  <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                      <Skeleton className="h-4 w-20" />
+                      <Skeleton className="h-6 w-6 rounded-full" />
+                  </CardHeader>
+                  <CardContent>
+                      <Skeleton className="h-8 w-16" />
+                  </CardContent>
+              </Card>
+          ))}
+      </div>
+      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+        <Card className="lg:col-span-2">
+          <CardHeader>
+            <CardTitle>Vulnerabilities by Severity</CardTitle>
+          </CardHeader>
+          <CardContent className="pl-2">
+            <Skeleton className="h-[350px] w-full" />
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>Open vs. Closed</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <Skeleton className="h-[350px] w-full" />
+          </CardContent>
+        </Card>
+      </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>Top 5 Vulnerable Products</CardTitle>
+        </CardHeader>
+        <CardContent>
+           <Skeleton className="h-[350px] w-full" />
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
 export default function KpiPage() {
   const [data, setData] = useState<KpiData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [selectedProduct, setSelectedProduct] = useState<string>('all');
+  const [productKpiData, setProductKpiData] = useState<ProductKpiData | null>(null);
+  const [productKpiLoading, setProductKpiLoading] = useState<boolean>(false);
 
   useEffect(() => {
     async function fetchData() {
@@ -54,53 +105,34 @@ export default function KpiPage() {
     }
     fetchData();
   }, []);
+  
+  useEffect(() => {
+    async function fetchProductData() {
+        if (selectedProduct === 'all') {
+            setProductKpiData(null);
+            return;
+        }
+        try {
+            setProductKpiLoading(true);
+            const result = await getProductKpiData({ productName: selectedProduct });
+            setProductKpiData(result);
+        } catch (error) {
+            console.error(`Failed to fetch product KPI data for ${selectedProduct}`, error);
+            setProductKpiData(null);
+        } finally {
+            setProductKpiLoading(false);
+        }
+    }
+    fetchProductData();
+  }, [selectedProduct]);
 
-  const totalVulnerabilities = data?.vulnerabilitiesBySeverity.reduce((acc, curr) => acc + curr.count, 0) ?? 0;
+  const totalVulnerabilities = useMemo(() => {
+      if (!data) return 0;
+      return data.vulnerabilitiesBySeverity.reduce((acc, curr) => acc + curr.count, 0)
+  }, [data]);
 
   if (loading) {
-    return (
-      <div className="space-y-6">
-        <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-5">
-            {Array.from({ length: 5 }).map((_, index) => (
-                <Card key={index}>
-                    <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                        <Skeleton className="h-4 w-20" />
-                        <Skeleton className="h-6 w-6 rounded-full" />
-                    </CardHeader>
-                    <CardContent>
-                        <Skeleton className="h-8 w-16" />
-                    </CardContent>
-                </Card>
-            ))}
-        </div>
-        <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-          <Card className="lg:col-span-2">
-            <CardHeader>
-              <CardTitle>Vulnerabilities by Severity</CardTitle>
-            </CardHeader>
-            <CardContent className="pl-2">
-              <Skeleton className="h-[350px] w-full" />
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader>
-              <CardTitle>Open vs. Closed</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <Skeleton className="h-[350px] w-full" />
-            </CardContent>
-          </Card>
-        </div>
-        <Card>
-          <CardHeader>
-            <CardTitle>Top 5 Vulnerable Products</CardTitle>
-          </CardHeader>
-          <CardContent>
-             <Skeleton className="h-[350px] w-full" />
-          </CardContent>
-        </Card>
-      </div>
-    );
+    return <KpiSkeleton />;
   }
 
   if (!data) {
@@ -122,7 +154,7 @@ export default function KpiPage() {
             <CardHeader>
                 <CardTitle className="flex items-center gap-2 text-xl">
                     <TrendingUp className="h-5 w-5" />
-                    Vulnerability Overview
+                    Overall Vulnerability Overview
                 </CardTitle>
             </CardHeader>
             <CardContent>
@@ -151,7 +183,7 @@ export default function KpiPage() {
       <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
         <Card className="lg:col-span-2">
           <CardHeader>
-            <CardTitle>Vulnerabilities by Severity</CardTitle>
+            <CardTitle>Vulnerabilities by Severity (All Products)</CardTitle>
           </CardHeader>
           <CardContent className="pl-2">
             <ResponsiveContainer width="100%" height={350}>
@@ -207,20 +239,76 @@ export default function KpiPage() {
         </Card>
       </div>
 
+       <Card>
+        <CardHeader>
+            <CardTitle className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                    <Component className="h-5 w-5" />
+                    Product Deep Dive
+                </div>
+                <Select value={selectedProduct} onValueChange={setSelectedProduct}>
+                    <SelectTrigger className="w-[280px]">
+                        <SelectValue placeholder="Select a product" />
+                    </SelectTrigger>
+                    <SelectContent>
+                        <SelectItem value="all">All Products</SelectItem>
+                        {data.productList.map(product => (
+                            <SelectItem key={product.id} value={product.name}>{product.name}</SelectItem>
+                        ))}
+                    </SelectContent>
+                </Select>
+            </CardTitle>
+        </CardHeader>
+        {selectedProduct !== 'all' && (
+             <CardContent>
+                {productKpiLoading && <Skeleton className="h-[250px] w-full" />}
+                {!productKpiLoading && productKpiData && (
+                     <ResponsiveContainer width="100%" height={250}>
+                        <BarChart data={productKpiData.vulnerabilitiesBySeverity} margin={{ top: 20, right: 30, left: 0, bottom: 5 }}>
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                            <XAxis dataKey="severity" stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} />
+                            <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} allowDecimals={false}/>
+                            <Tooltip content={<CustomTooltip />} cursor={{ fill: 'hsl(var(--accent))', radius: 4 }} />
+                             <Bar dataKey="count" name="Count" radius={[4, 4, 0, 0]}>
+                                {productKpiData.vulnerabilitiesBySeverity.map((entry, index) => (
+                                    <Cell key={`cell-${index}`} fill={SEVERITY_COLORS[entry.severity]} />
+                                ))}
+                            </Bar>
+                        </BarChart>
+                    </ResponsiveContainer>
+                )}
+                 {!productKpiLoading && !productKpiData && (
+                    <div className="flex h-[250px] items-center justify-center text-muted-foreground">
+                        <p>Could not load data for this product.</p>
+                    </div>
+                )}
+             </CardContent>
+        )}
+      </Card>
+
       <Card>
         <CardHeader>
-          <CardTitle>Top 5 Vulnerable Products</CardTitle>
+          <CardTitle className="flex items-center gap-2">
+            <PackageSearch className="h-5 w-5" />
+            Top 5 Vulnerable Products
+          </CardTitle>
         </CardHeader>
         <CardContent className="pl-2">
-          <ResponsiveContainer width="100%" height={350}>
-            <BarChart data={data.topVulnerableProducts} layout="vertical" margin={{ top: 5, right: 20, left: 30, bottom: 5 }}>
-              <CartesianGrid strokeDasharray="3 3" horizontal={false} />
-              <XAxis type="number" stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} allowDecimals={false} />
-              <YAxis dataKey="product" type="category" stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} width={120} tick={{ textAnchor: 'end' }} />
-              <Tooltip content={<CustomTooltip />} cursor={{ fill: 'hsl(var(--accent))', radius: 4 }} />
-              <Bar dataKey="vulnerabilities" name="Vulnerabilities" fill="hsl(var(--primary))" radius={[0, 4, 4, 0]} barSize={30} />
-            </BarChart>
-          </ResponsiveContainer>
+          {data.topVulnerableProducts.length > 0 ? (
+            <ResponsiveContainer width="100%" height={350}>
+              <BarChart data={data.topVulnerableProducts} layout="vertical" margin={{ top: 5, right: 20, left: 30, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+                <XAxis type="number" stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} allowDecimals={false} />
+                <YAxis dataKey="product" type="category" stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} width={150} tick={{ textAnchor: 'end' }} interval={0} />
+                <Tooltip content={<CustomTooltip />} cursor={{ fill: 'hsl(var(--accent))', radius: 4 }} />
+                <Bar dataKey="vulnerabilities" name="Vulnerabilities" fill="hsl(var(--primary))" radius={[0, 4, 4, 0]} barSize={30} />
+              </BarChart>
+            </ResponsiveContainer>
+          ) : (
+             <div className="flex h-[350px] items-center justify-center text-muted-foreground">
+                <p>No product vulnerability data available to display.</p>
+            </div>
+          )}
         </CardContent>
       </Card>
       
