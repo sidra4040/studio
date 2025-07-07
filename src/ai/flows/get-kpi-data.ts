@@ -10,7 +10,8 @@
 import { z } from 'genkit';
 import { 
     getOpenVsClosedCounts,
-    getCachedAllFindings
+    getCachedAllFindings,
+    getProductList
 } from '@/services/defectdojo';
 
 const KpiDataSchema = z.object({
@@ -27,6 +28,10 @@ const KpiDataSchema = z.object({
         product: z.string(),
         vulnerabilities: z.number(),
     })).describe('Data for top 5 vulnerable products chart.'),
+    productList: z.array(z.object({
+        id: z.number(),
+        name: z.string(),
+    })).describe('List of all products for the deep dive dropdown.')
 });
 
 export type KpiData = z.infer<typeof KpiDataSchema>;
@@ -36,9 +41,10 @@ export async function getKpiData(): Promise<KpiData> {
         console.log("Fetching live KPI data from DefectDojo...");
         
         // Fetch all data in parallel
-        const [allFindings, openClosedCounts] = await Promise.all([
+        const [allFindings, openClosedCounts, productList] = await Promise.all([
             getCachedAllFindings(),
             getOpenVsClosedCounts(),
+            getProductList(),
         ]);
 
         if (!allFindings || allFindings.length === 0) {
@@ -56,6 +62,7 @@ export async function getKpiData(): Promise<KpiData> {
                     { name: 'Closed', value: 0, fill: 'hsl(var(--chart-2))' },
                 ],
                 topVulnerableProducts: [],
+                productList: [],
             };
         }
         
@@ -96,9 +103,10 @@ export async function getKpiData(): Promise<KpiData> {
                 { name: 'Closed', value: openClosedCounts.closed, fill: 'hsl(var(--chart-2))' },
             ],
             topVulnerableProducts: topProducts,
+            productList: productList,
         };
         
-        console.log("Successfully fetched and processed KPI data.", JSON.stringify(kpiData.vulnerabilitiesBySeverity));
+        console.log("Successfully fetched and processed KPI data.");
         return kpiData;
 
     } catch (error) {
@@ -116,6 +124,7 @@ export async function getKpiData(): Promise<KpiData> {
                 { name: 'Closed', value: 0, fill: 'hsl(var(--chart-2))' },
             ],
             topVulnerableProducts: [],
+            productList: [],
         };
     }
 }

@@ -27,7 +27,7 @@ const TestObjectSchema = z.object({
     engagement: z.object({ 
         id: z.number(),
         name: z.string(),
-        product: z.object({ id: z.number(), name: z.string() }).nullable()
+        product: z.object({ id: z.number(), name: z.string() }).optional().nullable()
     }).optional().nullable(),
 });
 
@@ -99,6 +99,8 @@ async function defectDojoFetchAll<T>(initialRelativeUrl: string): Promise<T[]> {
     while (nextUrl) {
         let urlToFetch: string;
 
+        // The 'next' URL from DefectDojo is a full URL. Use it directly.
+        // Otherwise, construct the full URL from the relative path.
         if (nextUrl.startsWith('http')) {
             urlToFetch = nextUrl;
         } else {
@@ -107,6 +109,7 @@ async function defectDojoFetchAll<T>(initialRelativeUrl: string): Promise<T[]> {
         
         const urlObj = new URL(urlToFetch);
 
+        // Ensure the prefetch parameter is present on all subsequent requests if it was in the initial one.
         if (prefetchParam && !urlObj.searchParams.has('prefetch')) {
             urlObj.searchParams.set('prefetch', prefetchParam);
         }
@@ -184,10 +187,12 @@ async function getProductIDByName(productName: string): Promise<number | null> {
     }
 }
 
-export async function getProductList() {
+export async function getProductList(): Promise<{id: number, name: string}[]> {
     try {
-        const products = await defectDojoFetchAll<z.infer<typeof ProductSchema>>('products/');
-        return products.map(p => p.name).filter(p => !!p);
+        const products = await defectDojoFetchAll<z.infer<typeof ProductSchema>>('products/?limit=200');
+        const productList = products.map(p => ({ id: p.id, name: p.name })).filter(p => !!p.name);
+        productList.sort((a, b) => a.name.localeCompare(b.name));
+        return productList;
     } catch (error) {
         console.error("Failed to fetch product list", error);
         return [];
@@ -268,32 +273,36 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
     }
 }
 
-export async function getVulnerabilityCountBySeverity(productName: string) {
+export async function getVulnerabilityCountsByProduct(productName: string): Promise<Record<string, number>> {
     const severities = ['Critical', 'High', 'Medium', 'Low', 'Info'];
-    const counts: Record<string, number> = {};
+    const counts: Record<string, number> = { Critical: 0, High: 0, Medium: 0, Low: 0, Info: 0 };
     
     try {
         const productId = await getProductIDByName(productName);
         if (!productId) {
-            return { error: `Product '${productName}' not found.` };
+            console.error(`Product '${productName}' not found.`);
+            return counts;
         }
 
-        let total = 0;
-        const promises = severities.map(async (severity) => {
-            const data = await defectDojoFetch(`findings/?test__engagement__product=${productId}&severity=${severity}&active=true&duplicate=false&limit=1`);
-            const count = FindingCountSchema.parse(data).count;
-            counts[severity] = count;
-        });
-        await Promise.all(promises);
+        // We can use the cached findings to avoid another network call
+        const allFindings = await getCachedAllFindings();
+        const productFindings = allFindings.filter(f => 
+            f.test && typeof f.test === 'object' && f.test.engagement?.product?.id === productId
+        );
 
-        Object.values(counts).forEach(c => total += c);
-        counts['Total'] = total;
+        for (const finding of productFindings) {
+            if (counts[finding.severity] !== undefined) {
+                counts[finding.severity]++;
+            }
+        }
         
         return counts;
     } catch(error) {
-        return { error: `Could not retrieve counts for ${productName}` };
+        console.error(`Could not retrieve counts for ${productName}:`, error);
+        return counts;
     }
 }
+
 
 export async function getOpenVsClosedCounts() {
     try {
@@ -316,7 +325,6 @@ export async function getProductVulnerabilitySummary() {
     try {
         const allFindings = await getCachedAllFindings();
         if (!allFindings || allFindings.length === 0) {
-            console.warn("Product summary from DefectDojo was empty. Returning default KPI data.");
             return {};
         }
 

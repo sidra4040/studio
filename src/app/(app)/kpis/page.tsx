@@ -1,12 +1,14 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
-import { getKpiData } from '@/app/actions';
+import { getKpiData, getProductKpiData } from '@/app/actions';
 import type { KpiData } from '@/ai/flows/get-kpi-data';
-import { TrendingUp, ShieldCheck, ShieldAlert, ShieldHalf, ShieldQuestion, Shield } from 'lucide-react';
+import type { ProductKpiData } from '@/ai/flows/get-product-kpi-data';
+import { TrendingUp, ShieldCheck, ShieldAlert, ShieldHalf, ShieldQuestion, Shield, Microscope } from 'lucide-react';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 const CustomTooltip = ({ active, payload, label }: any) => {
   if (active && payload && payload.length) {
@@ -39,6 +41,9 @@ const SEVERITY_ICONS: { [key: string]: React.ElementType } = {
 export default function KpiPage() {
   const [data, setData] = useState<KpiData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [selectedProduct, setSelectedProduct] = useState<string | null>(null);
+  const [productData, setProductData] = useState<ProductKpiData | null>(null);
+  const [isProductDataLoading, setIsProductDataLoading] = useState(false);
 
   useEffect(() => {
     async function fetchData() {
@@ -54,6 +59,25 @@ export default function KpiPage() {
     }
     fetchData();
   }, []);
+
+  const handleProductSelect = async (productName: string) => {
+    if (!productName) {
+        setSelectedProduct(null);
+        setProductData(null);
+        return;
+    }
+    setSelectedProduct(productName);
+    setIsProductDataLoading(true);
+    try {
+        const result = await getProductKpiData(productName);
+        setProductData(result);
+    } catch (error) {
+        console.error(`Failed to fetch KPI data for ${productName}`, error);
+        setProductData(null);
+    } finally {
+        setIsProductDataLoading(false);
+    }
+  };
   
   const totalVulnerabilities = data?.vulnerabilitiesBySeverity.reduce((acc, curr) => acc + curr.count, 0) ?? 0;
 
@@ -221,6 +245,53 @@ export default function KpiPage() {
               <Bar dataKey="vulnerabilities" name="Vulnerabilities" fill="hsl(var(--primary))" radius={[0, 4, 4, 0]} barSize={30} />
             </BarChart>
           </ResponsiveContainer>
+        </CardContent>
+      </Card>
+      
+      <Card>
+        <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+                <Microscope className="h-5 w-5" />
+                Product Deep Dive
+            </CardTitle>
+            <CardDescription>Select a product to see its specific vulnerability breakdown.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+            <Select onValueChange={handleProductSelect} disabled={isProductDataLoading}>
+                <SelectTrigger className="w-full md:w-1/2 lg:w-1/3">
+                    <SelectValue placeholder="Select a product..." />
+                </SelectTrigger>
+                <SelectContent>
+                    {data.productList.map(product => (
+                        <SelectItem key={product.id} value={product.name}>
+                            {product.name}
+                        </SelectItem>
+                    ))}
+                </SelectContent>
+            </Select>
+
+            {isProductDataLoading && <Skeleton className="h-[300px] w-full mt-4" />}
+            
+            {productData && !isProductDataLoading && (
+                <div className="pt-4">
+                    <h4 className="text-center font-semibold text-lg mb-4">
+                        Vulnerability Severity for {selectedProduct}
+                    </h4>
+                    <ResponsiveContainer width="100%" height={300}>
+                        <BarChart data={productData.vulnerabilitiesBySeverity} margin={{ top: 5, right: 20, left: -10, bottom: 5 }}>
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                            <XAxis dataKey="severity" stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} />
+                            <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} allowDecimals={false} />
+                            <Tooltip content={<CustomTooltip />} cursor={{ fill: 'hsl(var(--accent))', radius: 4 }} />
+                            <Bar dataKey="count" name="Count" radius={[4, 4, 0, 0]}>
+                                {productData.vulnerabilitiesBySeverity.map((entry, index) => (
+                                    <Cell key={`cell-${index}`} fill={SEVERITY_COLORS[entry.severity]} />
+                                ))}
+                            </Bar>
+                        </BarChart>
+                    </ResponsiveContainer>
+                </div>
+            )}
         </CardContent>
       </Card>
     </div>
