@@ -126,7 +126,7 @@ export async function getCachedAllFindings(): Promise<z.infer<typeof FindingSche
     }
 
     console.log("Cache is stale or empty. Fetching all active findings from API.");
-    const endpoint = 'findings/?active=true&duplicate=false&prefetch=test__engagement__product,test__test_type&limit=100';
+    const endpoint = 'findings/?active=true&duplicate=false&prefetch=test,test__engagement,test__engagement__product,test__test_type&limit=100';
     
     const allRawFindings = await defectDojoFetchAll<any>(endpoint);
     
@@ -211,45 +211,68 @@ interface GetFindingsParams {
 
 export async function getFindings(params: GetFindingsParams): Promise<string> {
     try {
-        const queryParams = new URLSearchParams();
-        queryParams.set('duplicate', 'false');
-        queryParams.set('active', params.active !== undefined ? String(params.active) : 'true');
-
-        if (params.severity) queryParams.set('severity', params.severity);
-        if (params.limit) queryParams.set('limit', String(params.limit));
+        // Get all findings from cache (or fetch if stale)
+        const allFindings = await getCachedAllFindings();
         
+        let filteredFindings = allFindings;
+
+        // Filter by product name
+        if (params.productName) {
+            const productId = await getProductIDByName(params.productName);
+            if (productId) {
+                filteredFindings = filteredFindings.filter(f => {
+                    if (typeof f.test !== 'object' || !f.test || !f.test.engagement) return false;
+                    const engagement = f.test.engagement;
+                    return engagement.product?.id === productId || engagement.product_id === productId;
+                });
+            } else {
+                 return JSON.stringify({ message: `Product '${params.productName}' not found.` });
+            }
+        }
+
+        // Filter by tool name
         if (params.toolName) {
             const lowerToolName = params.toolName.toLowerCase().trim();
             const toolKey = Object.keys(TOOL_ENGAGEMENT_MAP).find(key => key.includes(lowerToolName));
             const tool = toolKey ? TOOL_ENGAGEMENT_MAP[toolKey] : null;
+
             if (tool) {
-                queryParams.set('test__engagement', String(tool.id));
+                filteredFindings = filteredFindings.filter(f => {
+                     if (typeof f.test !== 'object' || !f.test || !f.test.engagement) return false;
+                     return f.test.engagement.id === tool.id;
+                });
             } else {
                  return JSON.stringify({ message: `Tool '${params.toolName}' not found.` });
             }
-        } else if (params.productName) {
-            const productId = await getProductIDByName(params.productName);
-            if (productId) {
-                queryParams.set('test__engagement__product', String(productId));
-            } else {
-                return JSON.stringify({ message: `Product '${params.productName}' not found.` });
-            }
         }
 
-        queryParams.set('prefetch', 'test__engagement__product,test__test_type');
-        
-        const data = await defectDojoFetch(`findings/?${queryParams.toString()}`);
-        const parsedFindings = FindingListSchema.safeParse(data);
+        // Filter by severity
+        if (params.severity) {
+            filteredFindings = filteredFindings.filter(f => f.severity === params.severity);
+        }
 
-        if (!parsedFindings.success || parsedFindings.data.results.length === 0) {
+        // Apply active filter (defaulting to true)
+        const isActive = params.active !== undefined ? params.active : true;
+        filteredFindings = filteredFindings.filter(f => f.active === isActive);
+
+        // Sort by CVSS score (descending)
+        filteredFindings.sort((a, b) => cvssToNumber(b.cvssv3_score) - cvssToNumber(a.cvssv3_score));
+        
+        const totalCount = filteredFindings.length;
+        
+        // Apply limit
+        const limit = params.limit || 10;
+        const limitedFindings = filteredFindings.slice(0, limit);
+
+        if (limitedFindings.length === 0) {
             const criteria = [params.severity, params.productName, params.toolName].filter(Boolean).join(', ');
             return JSON.stringify({ message: `No active vulnerabilities were found for the specified criteria: ${criteria}.` });
         }
 
         return JSON.stringify({
-            totalCount: parsedFindings.data.count,
-            showing: parsedFindings.data.results.length,
-            findings: parsedFindings.data.results.map(f => ({
+            totalCount: totalCount,
+            showing: limitedFindings.length,
+            findings: limitedFindings.map(f => ({
                 id: f.id,
                 title: f.title,
                 cve: f.cve || 'N/A',
