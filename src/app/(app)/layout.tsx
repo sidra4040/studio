@@ -34,11 +34,6 @@ const AppLayout = ({ children }: { children: React.ReactNode }) => {
       label: 'DojoGPT Chat',
       icon: BotMessageSquare,
     },
-    {
-      href: '/kpis',
-      label: 'KPI Dashboard',
-      icon: LayoutDashboard,
-    },
   ];
 
   return (
