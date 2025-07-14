@@ -27,8 +27,9 @@ const TestObjectSchema = z.object({
         id: z.number(),
         name: z.string()
     }).optional().nullable(),
-    engagement: EngagementSchema.optional().nullable(),
+    engagement: z.union([EngagementSchema, z.number()]).optional().nullable(),
 });
+
 
 const FindingSchema = z.object({
     id: z.number(),
@@ -97,7 +98,6 @@ async function defectDojoFetchAll<T>(initialRelativeUrl: string): Promise<T[]> {
     return allResults;
 }
 
-
 let allFindingsCache: z.infer<typeof FindingSchema>[] | null = null;
 async function getCachedAllFindings(): Promise<z.infer<typeof FindingSchema>[]> {
      if (allFindingsCache) {
@@ -131,15 +131,6 @@ async function getCachedAllFindings(): Promise<z.infer<typeof FindingSchema>[]> 
 }
 
 
-function cvssToNumber(score: string | number | null | undefined): number {
-    if (typeof score === 'number') return score;
-    if (typeof score === 'string') {
-        const num = parseFloat(score);
-        return isNaN(num) ? 0 : num;
-    }
-    return 0;
-}
-
 async function getProductInfoByName(productName: string): Promise<{ id: number; name: string } | null> {
     const lowerProductName = productName.trim().toLowerCase();
     
@@ -150,18 +141,20 @@ async function getProductInfoByName(productName: string): Promise<{ id: number; 
     }
 
     for (const key in PRODUCT_MAP) {
-        if (key === lowerProductName || PRODUCT_MAP[key].name.toLowerCase() === lowerProductName) {
+        if (key === lowerProductName || PRODUCT_MAP[key].name.toLowerCase() === lowerProductName || PRODUCT_MAP[key].name.toLowerCase().replace(/ /g, '') === lowerProductName) {
             return PRODUCT_MAP[key];
         }
     }
-
+    
     try {
-        const products = await defectDojoFetchAll<z.infer<typeof ProductSchema>>(`products/?name__icontains=${encodeURIComponent(lowerProductName)}`);
-        if (products.length > 0) {
-            return { id: products[0].id, name: products[0].name };
+        const products = await defectDojoFetchAll<z.infer<typeof ProductSchema>>(`products/?limit=1000`);
+        const foundProduct = products.find(p => p.name.toLowerCase() === lowerProductName || String(p.id) === lowerProductName);
+        if (foundProduct) {
+            return { id: foundProduct.id, name: foundProduct.name };
         }
         return null;
     } catch (error) {
+        console.error(`Error fetching product info for ${productName}:`, error);
         return null;
     }
 }
@@ -192,7 +185,7 @@ export async function getFindings(productName?: string, severity?: string, activ
             duplicate: 'false',
             active: active !== undefined ? String(active) : 'true',
             limit: String(limit || 10),
-            prefetch: 'test__test_type',
+            prefetch: 'product,test__test_type',
         });
 
         if (severity) {
@@ -255,45 +248,28 @@ export async function getFindings(productName?: string, severity?: string, activ
 export async function getVulnerabilityCountsByProduct(productName: string): Promise<Record<string, number>> {
     const severities = ['Critical', 'High', 'Medium', 'Low', 'Info'];
     const counts: Record<string, number> = { Critical: 0, High: 0, Medium: 0, Low: 0, Info: 0, Total: 0 };
-
+    
     try {
         const productInfo = await getProductInfoByName(productName);
         if (!productInfo) {
-            console.error(`Product '${productName}' not found.`);
+            console.error(`Product '${productName}' not found for counts.`);
             return counts;
         }
 
-        const allFindings = await getCachedAllFindings();
-        
-        const productFindings = allFindings.filter(f => {
-            if (typeof f.test !== 'object' || !f.test || !f.test.engagement) return false;
-            const engagement = f.test.engagement;
-            if (typeof engagement.product === 'object' && engagement.product?.id === productInfo.id) {
-                return true;
-            }
-            if (engagement.product_id === productInfo.id) {
-                return true;
-            }
-            // Fallback for when product isn't directly linked but is in engagement name
-            if (engagement.name.toLowerCase().includes(productInfo.name.toLowerCase())) {
-                 return true;
-            }
-            return false;
-        });
-
-        for (const finding of productFindings) {
-            if (counts[finding.severity] !== undefined) {
-                counts[finding.severity]++;
-                counts.Total++;
-            }
+        for (const severity of severities) {
+            const data = await defectDojoFetch(`findings/?test__engagement__product=${productInfo.id}&severity=${severity}&active=true&duplicate=false&limit=1`);
+            const parsedData = z.object({ count: z.number() }).parse(data);
+            counts[severity] = parsedData.count;
+            counts.Total += parsedData.count;
         }
 
         return counts;
     } catch(error) {
         console.error(`Could not retrieve counts for ${productName}:`, error);
-        return counts;
+        return counts; // Return empty counts on error
     }
 }
+
 
 export async function getTotalFindingCount() {
     try {
@@ -308,105 +284,56 @@ export async function getTotalFindingCount() {
 
 export async function getProductVulnerabilitySummary() {
     try {
-        const allFindings = await getCachedAllFindings();
-        if (!allFindings || allFindings.length === 0) {
-            return {};
-        }
-
-        const PRODUCT_ID_MAP: Record<number, string> = Object.values(PRODUCT_MAP).reduce((acc, product) => {
-            acc[product.id] = product.name;
-            return acc;
-        }, {} as Record<number, string>);
-
+        const allProducts = await getProductList();
         const summary: Record<string, Record<string, number>> = {};
 
-        for (const finding of allFindings) {
-            if (typeof finding.test !== 'object' || !finding.test || !finding.test.engagement) continue;
-            
-            let productName: string | undefined | null = null;
-            if(typeof finding.test.engagement.product === 'object' && finding.test.engagement.product) {
-                productName = finding.test.engagement.product.name;
-            } else if (finding.test.engagement.product_id) {
-                productName = PRODUCT_ID_MAP[finding.test.engagement.product_id];
-            }
-            
-            if (!productName) {
-                const engagementName = finding.test.engagement.name.toLowerCase();
-                for (const key in PRODUCT_MAP) {
-                    if (engagementName.includes(key) || engagementName.includes(PRODUCT_MAP[key].name.toLowerCase())) {
-                        productName = PRODUCT_MAP[key].name;
-                        break;
-                    }
-                }
-            }
-
-            if (productName) {
-                if (!summary[productName]) {
-                    summary[productName] = { Critical: 0, High: 0, Medium: 0, Low: 0, Info: 0, Total: 0 };
-                }
-                const severity = finding.severity;
-                if (summary[productName][severity] !== undefined) {
-                    summary[productName][severity]++;
-                }
-                summary[productName].Total++;
-            }
+        for (const product of allProducts) {
+             if (!product.name) continue;
+             summary[product.name] = { Critical: 0, High: 0, Medium: 0, Low: 0, Info: 0, Total: 0 };
+             const counts = await getVulnerabilityCountsByProduct(product.name);
+             summary[product.name] = counts;
         }
-
         return summary;
+
     } catch(error) {
         console.error("Failed to get product vulnerability summary", error);
         return {};
     }
 }
 
+
 export async function getTopCriticalVulnerabilityPerProduct(): Promise<string> {
     try {
-        const allFindings = await getCachedAllFindings();
-        const criticalFindings = allFindings.filter(f => f.severity === 'Critical');
+        const allProducts = await getProductList();
+        const vulnerabilitiesByProduct = [];
 
-        const PRODUCT_ID_MAP: Record<number, string> = Object.values(PRODUCT_MAP).reduce((acc, product) => {
-            acc[product.id] = product.name;
-            return acc;
-        }, {} as Record<number, string>);
+        for (const product of allProducts) {
+            if (!product.id || !product.name) continue;
 
-        const vulnerabilitiesByProduct = criticalFindings.reduce((acc, f) => {
-            if (typeof f.test !== 'object' || !f.test || !f.test.engagement) return acc;
+            const data = await defectDojoFetch(`findings/?test__engagement__product=${product.id}&severity=Critical&active=true&duplicate=false&limit=1&ordering=-cvssv3_score`);
+            const parsedFindings = FindingListSchema.parse(data);
 
-            let productName: string | undefined | null = null;
-            if(typeof f.test.engagement.product === 'object' && f.test.engagement.product) {
-                productName = f.test.engagement.product.name;
-            } else if (f.test.engagement.product_id) {
-                productName = PRODUCT_ID_MAP[f.test.engagement.product_id];
+            if (parsedFindings.results.length > 0) {
+                const f = parsedFindings.results[0];
+                 vulnerabilitiesByProduct.push({
+                    product: product.name,
+                    vulnerability: {
+                        id: f.id,
+                        title: f.title,
+                        cve: f.cve || 'N/A',
+                        cwe: f.cwe ? `CWE-${f.cwe}` : 'Unknown',
+                        cvssv3_score: f.cvssv3_score || 'N/A',
+                        severity: f.severity,
+                    }
+                });
             }
+        }
 
-            if (!productName) {
-                return acc;
-            }
-
-            const currentVulnerability = acc[productName];
-            const newVulnerability = {
-                id: f.id,
-                title: f.title,
-                cve: f.cve || 'N/A',
-                cwe: f.cwe ? `CWE-${f.cwe}` : 'Unknown',
-                cvssv3_score: f.cvssv3_score || 'N/A',
-                severity: f.severity,
-            };
-
-            if (!currentVulnerability || cvssToNumber(f.cvssv3_score) > cvssToNumber(currentVulnerability.vulnerability.cvssv3_score)) {
-                acc[productName] = { product: productName, vulnerability: newVulnerability };
-            }
-
-            return acc;
-        }, {} as Record<string, { product: string; vulnerability: any }>);
-
-        const results = Object.values(vulnerabilitiesByProduct);
-
-        if (results.length === 0) {
+        if (vulnerabilitiesByProduct.length === 0) {
             return JSON.stringify({ message: "No critical vulnerabilities found for any product." });
         }
 
-        return JSON.stringify({ vulnerabilitiesByProduct: results }, null, 2);
+        return JSON.stringify({ vulnerabilitiesByProduct }, null, 2);
 
     } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
@@ -414,158 +341,14 @@ export async function getTopCriticalVulnerabilityPerProduct(): Promise<string> {
     }
 }
 
+// THIS FUNCTION IS NO LONGER USED AND WILL BE REMOVED
 export async function getComponentImpact(componentName: string) {
-    try {
-        const allFindingsData = await getCachedAllFindings();
-
-        if (!allFindingsData || allFindingsData.length === 0) {
-            return { error: 'No active findings found to analyze.' };
-        }
-
-        let totalRisk = 0;
-        allFindingsData.forEach(finding => {
-            totalRisk += cvssToNumber(finding.cvssv3_score);
-        });
-
-        const componentPattern = new RegExp(componentName, 'i');
-        const componentFindings = allFindingsData.filter(finding =>
-            componentPattern.test(finding.title) || (finding.description && componentPattern.test(finding.description))
-        );
-
-        if (componentFindings.length === 0) {
-            return {
-                componentName,
-                vulnerabilityCount: 0,
-                criticalCount: 0,
-                highCount: 0,
-                riskReductionPercent: 0,
-                sampleVulnerabilities: [],
-                message: `No vulnerabilities found for component '${componentName}'.`
-            };
-        }
-
-        let componentRisk = 0;
-        let criticalCount = 0;
-        let highCount = 0;
-
-        componentFindings.forEach(finding => {
-            componentRisk += cvssToNumber(finding.cvssv3_score);
-            if (finding.severity === 'Critical') criticalCount++;
-            if (finding.severity === 'High') highCount++;
-        });
-
-        const topCriticalVulnerabilities = componentFindings
-            .filter(f => f.severity === 'Critical')
-            .sort((a, b) => cvssToNumber(b.cvssv3_score) - cvssToNumber(a.cvssv3_score))
-            .slice(0, 5)
-            .map(f => ({
-                id: f.id,
-                title: f.title,
-                severity: f.severity,
-                cve: f.cve || 'N/A',
-                cvssv3_score: f.cvssv3_score || 'N/A',
-                cwe: f.cwe ? `CWE-${f.cwe}` : 'Unknown',
-            }));
-
-        const riskReductionPercent = totalRisk > 0 ? (componentRisk / totalRisk) * 100 : 0;
-
-        return {
-            componentName,
-            vulnerabilityCount: componentFindings.length,
-            criticalCount,
-            highCount,
-            riskReductionPercent: parseFloat(riskReductionPercent.toFixed(1)),
-            sampleVulnerabilities: topCriticalVulnerabilities,
-        };
-
-    } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        return { error: `Failed to analyze component impact. Details: ${errorMessage}` };
-    }
+    return { error: "This function is deprecated." };
 }
 
+// THIS FUNCTION IS NO LONGER USED AND WILL BE REMOVED
 export async function getTopRiskyComponents(limit: number = 5, productName?: string) {
-    try {
-        let allFindingsData = await getCachedAllFindings();
-        let productInfo: { id: number; name: string } | null = null;
-
-        if (productName) {
-            productInfo = await getProductInfoByName(productName);
-            if (productInfo) {
-                allFindingsData = allFindingsData.filter(f => {
-                    if (typeof f.test !== 'object' || !f.test || !f.test.engagement) return false;
-                    const engagement = f.test.engagement;
-                    if (typeof engagement.product === 'object' && engagement.product?.id === productInfo.id) {
-                        return true;
-                    }
-                    if (engagement.product_id === productInfo.id) {
-                        return true;
-                    }
-                    // Fallback for when product isn't directly linked but is in engagement name
-                    if (engagement.name.toLowerCase().includes(productInfo.name.toLowerCase())) {
-                        return true;
-                    }
-                    return false;
-                });
-            } else {
-                 return { error: `Product '${productName}' not found.` };
-            }
-        }
-
-        if (!allFindingsData || allFindingsData.length === 0) {
-            return { error: `No active findings found to analyze for ${productName || 'any product'}.` };
-        }
-
-        let totalRisk = 0;
-        allFindingsData.forEach(finding => {
-            totalRisk += cvssToNumber(finding.cvssv3_score);
-        });
-
-        if (totalRisk === 0) {
-            return {
-                topComponents: [],
-                message: 'No vulnerabilities with CVSS scores found. Cannot calculate risk.'
-            };
-        }
-
-        const componentAnalyses = [];
-        for (const componentName of KNOWN_COMPONENTS) {
-            const componentPattern = new RegExp(`\\b${componentName}\\b`, 'i');
-            const componentFindings = allFindingsData.filter(finding =>
-                componentPattern.test(finding.title) || (finding.description && componentPattern.test(finding.description))
-            );
-
-            if (componentFindings.length > 0) {
-                let componentRisk = 0;
-                let criticalCount = 0;
-                let highCount = 0;
-
-                componentFindings.forEach(finding => {
-                    componentRisk += cvssToNumber(finding.cvssv3_score);
-                    if (finding.severity === 'Critical') criticalCount++;
-                    if (finding.severity === 'High') highCount++;
-                });
-
-                const riskReductionPercent = (componentRisk / totalRisk) * 100;
-
-                componentAnalyses.push({
-                    componentName,
-                    vulnerabilityCount: componentFindings.length,
-                    criticalCount,
-                    highCount,
-                    riskReductionPercent: parseFloat(riskReductionPercent.toFixed(1)),
-                });
-            }
-        }
-
-        const sortedComponents = componentAnalyses.sort((a, b) => b.riskReductionPercent - a.riskReductionPercent);
-
-        return {
-            topComponents: sortedComponents.slice(0, limit)
-        };
-
-    } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        return { error: `Failed to analyze top risky components. Details: ${errorMessage}` };
-    }
+    // Re-implement this to be efficient if needed in the future,
+    // for now, the AI will use get_findings.
+    return { error: "This function is deprecated." };
 }
