@@ -21,7 +21,7 @@ const FindingCountSchema = z.object({
 const EngagementSchema = z.object({
     id: z.number(),
     name: z.string(),
-    product: z.object({ id: z.number(), name: z.string() }).optional().nullable(),
+    product: z.union([ProductSchema, z.number()]).optional().nullable(),
     product_id: z.number().optional().nullable(),
 });
 
@@ -62,8 +62,6 @@ async function defectDojoFetch(url: string, options: RequestInit = {}) {
 
     const fullUrl = url.startsWith('http') ? url : `${API_URL.replace(/\/$/, '')}/api/v2/${url.replace(/^\//, '')}`;
 
-    console.log(`Querying DefectDojo: ${fullUrl}`);
-
     const response = await fetch(fullUrl, {
         ...options,
         headers: {
@@ -76,7 +74,6 @@ async function defectDojoFetch(url: string, options: RequestInit = {}) {
 
     if (!response.ok) {
         const errorText = await response.text();
-        console.error(`Error fetching from DefectDojo. URL: ${fullUrl}, Status: ${response.status}`);
         throw new Error(`Failed to fetch from DefectDojo: ${response.status} ${response.statusText}. Details: ${errorText}`);
     }
 
@@ -89,27 +86,36 @@ async function defectDojoFetch(url: string, options: RequestInit = {}) {
 async function defectDojoFetchAll<T>(initialRelativeUrl: string): Promise<T[]> {
     const allResults: T[] = [];
     let nextUrl: string | null = initialRelativeUrl;
+    
+    // Use the full URL from the 'next' property, which is absolute
+    const getNextUrl = (next: string | null): string | null => {
+        if (!next) return null;
+        return next;
+    };
 
     while (nextUrl) {
-        const data = await defectDojoFetch(nextUrl);
+        // Construct the full URL only for the initial request
+        const fetchUrl = nextUrl.startsWith('http') ? nextUrl : `${API_URL.replace(/\/$/, '')}/api/v2/${nextUrl.replace(/^\//, '')}`;
+
+        const data = await defectDojoFetch(fetchUrl);
         const results = data.results as T[] | undefined;
 
         if (results && results.length > 0) {
             allResults.push(...results);
         }
 
-        if (data.next) {
-            nextUrl = data.next;
-        } else {
-            break;
-        }
+        nextUrl = getNextUrl(data.next);
     }
     return allResults;
 }
 
-// This function is kept for components that still need to fetch all findings, like the KPI dashboard.
-export async function getAllFindings(): Promise<z.infer<typeof FindingSchema>[]> {
-    console.log("Fetching all active findings from API for KPI data.");
+
+let allFindingsCache: z.infer<typeof FindingSchema>[] | null = null;
+async function getCachedAllFindings(): Promise<z.infer<typeof FindingSchema>[]> {
+     if (allFindingsCache) {
+        console.log("Returning findings from cache.");
+        return allFindingsCache;
+    }
     const endpoint = 'findings/?active=true&duplicate=false&prefetch=test,test__engagement,test__engagement__product,test__test_type&limit=100';
 
     const allRawFindings = await defectDojoFetchAll<any>(endpoint);
@@ -130,12 +136,14 @@ export async function getAllFindings(): Promise<z.infer<typeof FindingSchema>[]>
     }
 
     if (parsingErrors.length > 0) {
-        console.warn(`Encountered ${parsingErrors.length} findings with parsing errors. They will be excluded from the summary. First error:`, parsingErrors[0]);
+        console.warn(`Encountered ${parsingErrors.length} findings with parsing errors. They will be excluded from the summary. First error:`, JSON.stringify(parsingErrors[0], null, 2));
     }
-
-    console.log(`Successfully fetched and parsed ${successfullyParsedFindings.length} findings for KPI data.`);
-    return successfullyParsedFindings;
+    
+    console.log(`Successfully fetched and parsed ${successfullyParsedFindings.length} findings.`);
+    allFindingsCache = successfullyParsedFindings;
+    return allFindingsCache;
 }
+
 
 function cvssToNumber(score: string | number | null | undefined): number {
     if (typeof score === 'number') return score;
@@ -148,6 +156,11 @@ function cvssToNumber(score: string | number | null | undefined): number {
 
 async function getProductIDByName(productName: string): Promise<number | null> {
     const lowerProductName = productName.trim().toLowerCase();
+    
+    const idNumber = parseInt(lowerProductName, 10);
+    if (!isNaN(idNumber)) {
+        return idNumber;
+    }
 
     for (const key in PRODUCT_MAP) {
         if (key === lowerProductName || PRODUCT_MAP[key].name.toLowerCase() === lowerProductName) {
@@ -183,45 +196,37 @@ export async function getToolList() {
     }
 }
 
-interface GetFindingsParams {
-    productName?: string;
-    severity?: string;
-    active?: boolean;
-    limit?: number;
-    toolName?: string;
-}
-
-export async function getFindings(params: GetFindingsParams): Promise<string> {
+export async function getFindings(productName?: string, severity?: string, active?: boolean, limit?: number, toolName?: string): Promise<string> {
     try {
         const queryParams = new URLSearchParams({
             duplicate: 'false',
-            active: params.active !== undefined ? String(params.active) : 'true',
-            limit: String(params.limit || 10),
-            prefetch: 'test,test__test_type',
+            active: active !== undefined ? String(active) : 'true',
+            limit: String(limit || 10),
+            prefetch: 'product,test__test_type',
         });
 
-        if (params.severity) {
-            queryParams.set('severity', params.severity);
+        if (severity) {
+            queryParams.set('severity', severity);
         }
 
-        if (params.productName) {
-            const productId = await getProductIDByName(params.productName);
+        if (productName) {
+            const productId = await getProductIDByName(productName);
             if (productId) {
                 queryParams.set('test__engagement__product', String(productId));
             } else {
-                return JSON.stringify({ message: `Product '${params.productName}' not found.` });
+                return JSON.stringify({ message: `Product '${productName}' not found.` });
             }
         }
 
-        if (params.toolName) {
-            const lowerToolName = params.toolName.toLowerCase().trim();
+        if (toolName) {
+            const lowerToolName = toolName.toLowerCase().trim();
             const toolKey = Object.keys(TOOL_ENGAGEMENT_MAP).find(key => key.includes(lowerToolName));
             const tool = toolKey ? TOOL_ENGAGEMENT_MAP[toolKey] : null;
 
             if (tool) {
                 queryParams.set('test__engagement', String(tool.id));
             } else {
-                return JSON.stringify({ message: `Tool '${params.toolName}' not found.` });
+                return JSON.stringify({ message: `Tool '${toolName}' not found.` });
             }
         }
 
@@ -230,7 +235,7 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
         const parsedFindings = FindingListSchema.parse(data);
 
         if (parsedFindings.results.length === 0) {
-            const criteria = [params.severity, params.productName, params.toolName].filter(Boolean).join(', ');
+            const criteria = [severity, productName, toolName].filter(Boolean).join(', ');
             return JSON.stringify({ message: `No active vulnerabilities were found for the specified criteria: ${criteria}.` });
         }
 
@@ -267,17 +272,14 @@ export async function getVulnerabilityCountsByProduct(productName: string): Prom
             return counts;
         }
 
-        // We can use the cached findings to avoid another network call
-        const allFindings = await getAllFindings();
+        const allFindings = await getCachedAllFindings();
 
         const productFindings = allFindings.filter(f => {
             if (typeof f.test !== 'object' || !f.test || !f.test.engagement) return false;
             const engagement = f.test.engagement;
-            // Check direct product link first
-            if (engagement.product?.id === targetProductId) {
+            if (typeof engagement.product === 'object' && engagement.product?.id === targetProductId) {
                 return true;
             }
-            // Fallback to product_id on engagement
             if (engagement.product_id === targetProductId) {
                 return true;
             }
@@ -318,7 +320,7 @@ export async function getOpenVsClosedCounts() {
 
 export async function getProductVulnerabilitySummary() {
     try {
-        const allFindings = await getAllFindings();
+        const allFindings = await getCachedAllFindings();
         if (!allFindings || allFindings.length === 0) {
             return {};
         }
@@ -332,12 +334,15 @@ export async function getProductVulnerabilitySummary() {
 
         for (const finding of allFindings) {
             if (typeof finding.test !== 'object' || !finding.test || !finding.test.engagement) continue;
-
-            let productName: string | undefined | null = finding.test.engagement.product?.name;
-            if (!productName && finding.test.engagement.product_id) {
+            
+            let productName: string | undefined | null = null;
+            if(typeof finding.test.engagement.product === 'object' && finding.test.engagement.product) {
+                productName = finding.test.engagement.product.name;
+            } else if (finding.test.engagement.product_id) {
                 productName = PRODUCT_ID_MAP[finding.test.engagement.product_id];
             }
-             if (!productName) {
+            
+            if (!productName) {
                 const engagementName = finding.test.engagement.name.toLowerCase();
                 for (const key in PRODUCT_MAP) {
                     if (engagementName.includes(key)) {
@@ -378,7 +383,7 @@ export async function getTotalFindingCount() {
 
 export async function getTopCriticalVulnerabilityPerProduct(): Promise<string> {
     try {
-        const allFindings = await getAllFindings();
+        const allFindings = await getCachedAllFindings();
         const criticalFindings = allFindings.filter(f => f.severity === 'Critical');
 
         const PRODUCT_ID_MAP: Record<number, string> = Object.values(PRODUCT_MAP).reduce((acc, product) => {
@@ -389,8 +394,10 @@ export async function getTopCriticalVulnerabilityPerProduct(): Promise<string> {
         const vulnerabilitiesByProduct = criticalFindings.reduce((acc, f) => {
             if (typeof f.test !== 'object' || !f.test || !f.test.engagement) return acc;
 
-            let productName: string | undefined | null = f.test.engagement.product?.name;
-            if (!productName && f.test.engagement.product_id) {
+            let productName: string | undefined | null = null;
+            if(typeof f.test.engagement.product === 'object' && f.test.engagement.product) {
+                productName = f.test.engagement.product.name;
+            } else if (f.test.engagement.product_id) {
                 productName = PRODUCT_ID_MAP[f.test.engagement.product_id];
             }
 
@@ -431,7 +438,7 @@ export async function getTopCriticalVulnerabilityPerProduct(): Promise<string> {
 
 export async function getComponentImpact(componentName: string) {
     try {
-        const allFindingsData = await getAllFindings();
+        const allFindingsData = await getCachedAllFindings();
 
         if (!allFindingsData || allFindingsData.length === 0) {
             return { error: 'No active findings found to analyze.' };
@@ -499,12 +506,31 @@ export async function getComponentImpact(componentName: string) {
     }
 }
 
-export async function getTopRiskyComponents(limit: number = 5) {
+export async function getTopRiskyComponents(limit: number = 5, productName?: string) {
     try {
-        const allFindingsData = await getAllFindings();
+        let allFindingsData = await getCachedAllFindings();
+
+        if (productName) {
+            const productId = await getProductIDByName(productName);
+            if (productId) {
+                 allFindingsData = allFindingsData.filter(f => {
+                    if (typeof f.test !== 'object' || !f.test || !f.test.engagement) return false;
+                    const engagement = f.test.engagement;
+                    if (typeof engagement.product === 'object' && engagement.product?.id === productId) {
+                        return true;
+                    }
+                    if (engagement.product_id === productId) {
+                        return true;
+                    }
+                    return false;
+                });
+            } else {
+                 return { error: `Product '${productName}' not found.` };
+            }
+        }
 
         if (!allFindingsData || allFindingsData.length === 0) {
-            return { error: 'No active findings found to analyze.' };
+            return { error: `No active findings found to analyze for ${productName || 'any product'}.` };
         }
 
         let totalRisk = 0;
