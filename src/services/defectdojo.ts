@@ -14,10 +14,6 @@ const ProductSchema = z.object({
     name: z.string(),
 });
 
-const FindingCountSchema = z.object({
-    count: z.number(),
-});
-
 const EngagementSchema = z.object({
     id: z.number(),
     name: z.string(),
@@ -87,24 +83,16 @@ async function defectDojoFetchAll<T>(initialRelativeUrl: string): Promise<T[]> {
     const allResults: T[] = [];
     let nextUrl: string | null = initialRelativeUrl;
     
-    // Use the full URL from the 'next' property, which is absolute
-    const getNextUrl = (next: string | null): string | null => {
-        if (!next) return null;
-        return next;
-    };
-
     while (nextUrl) {
-        // Construct the full URL only for the initial request
-        const fetchUrl = nextUrl.startsWith('http') ? nextUrl : `${API_URL.replace(/\/$/, '')}/api/v2/${nextUrl.replace(/^\//, '')}`;
-
-        const data = await defectDojoFetch(fetchUrl);
+        // The 'next' URL from DefectDojo is absolute, so we can use it directly.
+        const data = await defectDojoFetch(nextUrl);
         const results = data.results as T[] | undefined;
 
         if (results && results.length > 0) {
             allResults.push(...results);
         }
 
-        nextUrl = getNextUrl(data.next);
+        nextUrl = data.next;
     }
     return allResults;
 }
@@ -113,7 +101,6 @@ async function defectDojoFetchAll<T>(initialRelativeUrl: string): Promise<T[]> {
 let allFindingsCache: z.infer<typeof FindingSchema>[] | null = null;
 async function getCachedAllFindings(): Promise<z.infer<typeof FindingSchema>[]> {
      if (allFindingsCache) {
-        console.log("Returning findings from cache.");
         return allFindingsCache;
     }
     const endpoint = 'findings/?active=true&duplicate=false&prefetch=test,test__engagement,test__engagement__product,test__test_type&limit=100';
@@ -139,7 +126,6 @@ async function getCachedAllFindings(): Promise<z.infer<typeof FindingSchema>[]> 
         console.warn(`Encountered ${parsingErrors.length} findings with parsing errors. They will be excluded from the summary. First error:`, JSON.stringify(parsingErrors[0], null, 2));
     }
     
-    console.log(`Successfully fetched and parsed ${successfullyParsedFindings.length} findings.`);
     allFindingsCache = successfullyParsedFindings;
     return allFindingsCache;
 }
@@ -154,23 +140,27 @@ function cvssToNumber(score: string | number | null | undefined): number {
     return 0;
 }
 
-async function getProductIDByName(productName: string): Promise<number | null> {
+async function getProductInfoByName(productName: string): Promise<{ id: number; name: string } | null> {
     const lowerProductName = productName.trim().toLowerCase();
     
     const idNumber = parseInt(lowerProductName, 10);
     if (!isNaN(idNumber)) {
-        return idNumber;
+        const productById = Object.values(PRODUCT_MAP).find(p => p.id === idNumber);
+        if (productById) return productById;
     }
 
     for (const key in PRODUCT_MAP) {
         if (key === lowerProductName || PRODUCT_MAP[key].name.toLowerCase() === lowerProductName) {
-            return PRODUCT_MAP[key].id;
+            return PRODUCT_MAP[key];
         }
     }
 
     try {
         const products = await defectDojoFetchAll<z.infer<typeof ProductSchema>>(`products/?name__icontains=${encodeURIComponent(lowerProductName)}`);
-        return products.length > 0 ? products[0].id : null;
+        if (products.length > 0) {
+            return { id: products[0].id, name: products[0].name };
+        }
+        return null;
     } catch (error) {
         return null;
     }
@@ -202,16 +192,18 @@ export async function getFindings(productName?: string, severity?: string, activ
             duplicate: 'false',
             active: active !== undefined ? String(active) : 'true',
             limit: String(limit || 10),
-            prefetch: 'product,test__test_type',
+            prefetch: 'test__test_type',
         });
 
         if (severity) {
             queryParams.set('severity', severity);
         }
 
+        let productId: number | null = null;
         if (productName) {
-            const productId = await getProductIDByName(productName);
-            if (productId) {
+            const productInfo = await getProductInfoByName(productName);
+            if (productInfo) {
+                productId = productInfo.id;
                 queryParams.set('test__engagement__product', String(productId));
             } else {
                 return JSON.stringify({ message: `Product '${productName}' not found.` });
@@ -260,28 +252,31 @@ export async function getFindings(productName?: string, severity?: string, activ
     }
 }
 
-
 export async function getVulnerabilityCountsByProduct(productName: string): Promise<Record<string, number>> {
     const severities = ['Critical', 'High', 'Medium', 'Low', 'Info'];
     const counts: Record<string, number> = { Critical: 0, High: 0, Medium: 0, Low: 0, Info: 0, Total: 0 };
 
     try {
-        const targetProductId = await getProductIDByName(productName);
-        if (!targetProductId) {
+        const productInfo = await getProductInfoByName(productName);
+        if (!productInfo) {
             console.error(`Product '${productName}' not found.`);
             return counts;
         }
 
         const allFindings = await getCachedAllFindings();
-
+        
         const productFindings = allFindings.filter(f => {
             if (typeof f.test !== 'object' || !f.test || !f.test.engagement) return false;
             const engagement = f.test.engagement;
-            if (typeof engagement.product === 'object' && engagement.product?.id === targetProductId) {
+            if (typeof engagement.product === 'object' && engagement.product?.id === productInfo.id) {
                 return true;
             }
-            if (engagement.product_id === targetProductId) {
+            if (engagement.product_id === productInfo.id) {
                 return true;
+            }
+            // Fallback for when product isn't directly linked but is in engagement name
+            if (engagement.name.toLowerCase().includes(productInfo.name.toLowerCase())) {
+                 return true;
             }
             return false;
         });
@@ -300,21 +295,14 @@ export async function getVulnerabilityCountsByProduct(productName: string): Prom
     }
 }
 
-
-export async function getOpenVsClosedCounts() {
+export async function getTotalFindingCount() {
     try {
-        const [openData, closedData] = await Promise.all([
-            defectDojoFetch(`findings/?active=true&duplicate=false&limit=1`),
-            defectDojoFetch(`findings/?active=false&duplicate=false&limit=1`)
-        ]);
-
-        return {
-            open: FindingCountSchema.parse(openData).count,
-            closed: FindingCountSchema.parse(closedData).count,
-        };
+        const data = await defectDojoFetch(`findings/?duplicate=false&limit=1`);
+        const parsedData = z.object({ count: z.number() }).parse(data);
+        return { count: parsedData.count };
     } catch (error) {
-        console.error("Failed to fetch open/closed counts", error);
-        return { error: "Failed to fetch open/closed counts", open: 0, closed: 0 };
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        return { error: `Failed to retrieve total finding count: ${errorMessage}` };
     }
 }
 
@@ -345,7 +333,7 @@ export async function getProductVulnerabilitySummary() {
             if (!productName) {
                 const engagementName = finding.test.engagement.name.toLowerCase();
                 for (const key in PRODUCT_MAP) {
-                    if (engagementName.includes(key)) {
+                    if (engagementName.includes(key) || engagementName.includes(PRODUCT_MAP[key].name.toLowerCase())) {
                         productName = PRODUCT_MAP[key].name;
                         break;
                     }
@@ -368,16 +356,6 @@ export async function getProductVulnerabilitySummary() {
     } catch(error) {
         console.error("Failed to get product vulnerability summary", error);
         return {};
-    }
-}
-
-export async function getTotalFindingCount() {
-    try {
-        const data = await defectDojoFetch(`findings/?duplicate=false&limit=1`);
-        return { count: FindingCountSchema.parse(data).count };
-    } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        return { error: `Failed to retrieve total finding count: ${errorMessage}` };
     }
 }
 
@@ -509,17 +487,22 @@ export async function getComponentImpact(componentName: string) {
 export async function getTopRiskyComponents(limit: number = 5, productName?: string) {
     try {
         let allFindingsData = await getCachedAllFindings();
+        let productInfo: { id: number; name: string } | null = null;
 
         if (productName) {
-            const productId = await getProductIDByName(productName);
-            if (productId) {
-                 allFindingsData = allFindingsData.filter(f => {
+            productInfo = await getProductInfoByName(productName);
+            if (productInfo) {
+                allFindingsData = allFindingsData.filter(f => {
                     if (typeof f.test !== 'object' || !f.test || !f.test.engagement) return false;
                     const engagement = f.test.engagement;
-                    if (typeof engagement.product === 'object' && engagement.product?.id === productId) {
+                    if (typeof engagement.product === 'object' && engagement.product?.id === productInfo.id) {
                         return true;
                     }
-                    if (engagement.product_id === productId) {
+                    if (engagement.product_id === productInfo.id) {
+                        return true;
+                    }
+                    // Fallback for when product isn't directly linked but is in engagement name
+                    if (engagement.name.toLowerCase().includes(productInfo.name.toLowerCase())) {
                         return true;
                     }
                     return false;
@@ -547,7 +530,7 @@ export async function getTopRiskyComponents(limit: number = 5, productName?: str
 
         const componentAnalyses = [];
         for (const componentName of KNOWN_COMPONENTS) {
-            const componentPattern = new RegExp(componentName, 'i');
+            const componentPattern = new RegExp(`\\b${componentName}\\b`, 'i');
             const componentFindings = allFindingsData.filter(finding =>
                 componentPattern.test(finding.title) || (finding.description && componentPattern.test(finding.description))
             );
