@@ -27,9 +27,9 @@ const EngagementSchema = z.object({
 
 const TestObjectSchema = z.object({
     id: z.number(),
-    test_type: z.object({ 
+    test_type: z.object({
         id: z.number(),
-        name: z.string() 
+        name: z.string()
     }).optional().nullable(),
     engagement: EngagementSchema.optional().nullable(),
 });
@@ -44,7 +44,7 @@ const FindingSchema = z.object({
     cwe: z.number().nullable(),
     cve: z.string().nullable().optional(),
     cvssv3_score: z.union([z.string(), z.number()]).nullable().optional(),
-    test: TestObjectSchema.optional().nullable(),
+    test: z.union([TestObjectSchema, z.number()]).optional().nullable(),
 });
 
 
@@ -67,7 +67,7 @@ async function defectDojoFetch(url: string, options: RequestInit = {}) {
     }
 
     const fullUrl = url.startsWith('http') ? url : `${API_URL.replace(/\/$/, '')}/api/v2/${url.replace(/^\//, '')}`;
-    
+
     console.log(`Querying DefectDojo: ${fullUrl}`);
 
     const response = await fetch(fullUrl, {
@@ -127,12 +127,12 @@ export async function getCachedAllFindings(): Promise<z.infer<typeof FindingSche
 
     console.log("Cache is stale or empty. Fetching all active findings from API.");
     const endpoint = 'findings/?active=true&duplicate=false&prefetch=test,test__engagement,test__engagement__product,test__test_type&limit=100';
-    
+
     const allRawFindings = await defectDojoFetchAll<any>(endpoint);
-    
+
     const successfullyParsedFindings: z.infer<typeof FindingSchema>[] = [];
     const parsingErrors: any[] = [];
-    
+
     for (const finding of allRawFindings) {
         const result = FindingSchema.safeParse(finding);
         if (result.success) {
@@ -144,7 +144,7 @@ export async function getCachedAllFindings(): Promise<z.infer<typeof FindingSche
             });
         }
     }
-    
+
     if (parsingErrors.length > 0) {
         console.warn(`Encountered ${parsingErrors.length} findings with parsing errors. They will be excluded from the summary. First error:`, parsingErrors[0]);
     }
@@ -166,13 +166,13 @@ function cvssToNumber(score: string | number | null | undefined): number {
 
 async function getProductIDByName(productName: string): Promise<number | null> {
     const lowerProductName = productName.trim().toLowerCase();
-    
+
     for (const key in PRODUCT_MAP) {
         if (key === lowerProductName || PRODUCT_MAP[key].name.toLowerCase() === lowerProductName) {
             return PRODUCT_MAP[key].id;
         }
     }
-    
+
     try {
         const products = await defectDojoFetchAll<z.infer<typeof ProductSchema>>(`products/?name__icontains=${encodeURIComponent(lowerProductName)}`);
         return products.length > 0 ? products[0].id : null;
@@ -213,7 +213,7 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
     try {
         // Get all findings from cache (or fetch if stale)
         const allFindings = await getCachedAllFindings();
-        
+
         let filteredFindings = allFindings;
 
         // Filter by product name
@@ -257,9 +257,9 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
 
         // Sort by CVSS score (descending)
         filteredFindings.sort((a, b) => cvssToNumber(b.cvssv3_score) - cvssToNumber(a.cvssv3_score));
-        
+
         const totalCount = filteredFindings.length;
-        
+
         // Apply limit
         const limit = params.limit || 10;
         const limitedFindings = filteredFindings.slice(0, limit);
@@ -292,8 +292,8 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
 
 export async function getVulnerabilityCountsByProduct(productName: string): Promise<Record<string, number>> {
     const severities = ['Critical', 'High', 'Medium', 'Low', 'Info'];
-    const counts: Record<string, number> = { Critical: 0, High: 0, Medium: 0, Low: 0, Info: 0 };
-    
+    const counts: Record<string, number> = { Critical: 0, High: 0, Medium: 0, Low: 0, Info: 0, Total: 0 };
+
     try {
         const targetProductId = await getProductIDByName(productName);
         if (!targetProductId) {
@@ -303,7 +303,7 @@ export async function getVulnerabilityCountsByProduct(productName: string): Prom
 
         // We can use the cached findings to avoid another network call
         const allFindings = await getCachedAllFindings();
-        
+
         const productFindings = allFindings.filter(f => {
             if (typeof f.test !== 'object' || !f.test || !f.test.engagement) return false;
             const engagement = f.test.engagement;
@@ -321,9 +321,10 @@ export async function getVulnerabilityCountsByProduct(productName: string): Prom
         for (const finding of productFindings) {
             if (counts[finding.severity] !== undefined) {
                 counts[finding.severity]++;
+                counts.Total++;
             }
         }
-        
+
         return counts;
     } catch(error) {
         console.error(`Could not retrieve counts for ${productName}:`, error);
@@ -338,7 +339,7 @@ export async function getOpenVsClosedCounts() {
             defectDojoFetch(`findings/?active=true&duplicate=false&limit=1`),
             defectDojoFetch(`findings/?active=false&duplicate=false&limit=1`)
         ]);
-        
+
         return {
             open: FindingCountSchema.parse(openData).count,
             closed: FindingCountSchema.parse(closedData).count,
@@ -355,20 +356,29 @@ export async function getProductVulnerabilitySummary() {
         if (!allFindings || allFindings.length === 0) {
             return {};
         }
-        
+
         const PRODUCT_ID_MAP: Record<number, string> = Object.values(PRODUCT_MAP).reduce((acc, product) => {
             acc[product.id] = product.name;
             return acc;
         }, {} as Record<number, string>);
 
         const summary: Record<string, Record<string, number>> = {};
-        
+
         for (const finding of allFindings) {
             if (typeof finding.test !== 'object' || !finding.test || !finding.test.engagement) continue;
-            
+
             let productName: string | undefined | null = finding.test.engagement.product?.name;
             if (!productName && finding.test.engagement.product_id) {
                 productName = PRODUCT_ID_MAP[finding.test.engagement.product_id];
+            }
+             if (!productName) {
+                const engagementName = finding.test.engagement.name.toLowerCase();
+                for (const key in PRODUCT_MAP) {
+                    if (engagementName.includes(key)) {
+                        productName = PRODUCT_MAP[key].name;
+                        break;
+                    }
+                }
             }
 
             if (productName) {
@@ -382,7 +392,7 @@ export async function getProductVulnerabilitySummary() {
                 summary[productName].Total++;
             }
         }
-        
+
         return summary;
     } catch(error) {
         console.error("Failed to get product vulnerability summary", error);
@@ -404,12 +414,12 @@ export async function getTopCriticalVulnerabilityPerProduct(): Promise<string> {
     try {
         const allFindings = await getCachedAllFindings();
         const criticalFindings = allFindings.filter(f => f.severity === 'Critical');
-        
+
         const PRODUCT_ID_MAP: Record<number, string> = Object.values(PRODUCT_MAP).reduce((acc, product) => {
             acc[product.id] = product.name;
             return acc;
         }, {} as Record<number, string>);
-        
+
         const vulnerabilitiesByProduct = criticalFindings.reduce((acc, f) => {
             if (typeof f.test !== 'object' || !f.test || !f.test.engagement) return acc;
 
@@ -421,7 +431,7 @@ export async function getTopCriticalVulnerabilityPerProduct(): Promise<string> {
             if (!productName) {
                 return acc;
             }
-            
+
             const currentVulnerability = acc[productName];
             const newVulnerability = {
                 id: f.id,
@@ -435,7 +445,7 @@ export async function getTopCriticalVulnerabilityPerProduct(): Promise<string> {
             if (!currentVulnerability || cvssToNumber(f.cvssv3_score) > cvssToNumber(currentVulnerability.vulnerability.cvssv3_score)) {
                 acc[productName] = { product: productName, vulnerability: newVulnerability };
             }
-            
+
             return acc;
         }, {} as Record<string, { product: string; vulnerability: any }>);
 
@@ -444,7 +454,7 @@ export async function getTopCriticalVulnerabilityPerProduct(): Promise<string> {
         if (results.length === 0) {
             return JSON.stringify({ message: "No critical vulnerabilities found for any product." });
         }
-        
+
         return JSON.stringify({ vulnerabilitiesByProduct: results }, null, 2);
 
     } catch (error) {
@@ -456,7 +466,7 @@ export async function getTopCriticalVulnerabilityPerProduct(): Promise<string> {
 export async function getComponentImpact(componentName: string) {
     try {
         const allFindingsData = await getCachedAllFindings();
-        
+
         if (!allFindingsData || allFindingsData.length === 0) {
             return { error: 'No active findings found to analyze.' };
         }
@@ -467,7 +477,7 @@ export async function getComponentImpact(componentName: string) {
         });
 
         const componentPattern = new RegExp(componentName, 'i');
-        const componentFindings = allFindingsData.filter(finding => 
+        const componentFindings = allFindingsData.filter(finding =>
             componentPattern.test(finding.title) || (finding.description && componentPattern.test(finding.description))
         );
 
@@ -526,7 +536,7 @@ export async function getComponentImpact(componentName: string) {
 export async function getTopRiskyComponents(limit: number = 5) {
     try {
         const allFindingsData = await getCachedAllFindings();
-        
+
         if (!allFindingsData || allFindingsData.length === 0) {
             return { error: 'No active findings found to analyze.' };
         }
@@ -535,7 +545,7 @@ export async function getTopRiskyComponents(limit: number = 5) {
         allFindingsData.forEach(finding => {
             totalRisk += cvssToNumber(finding.cvssv3_score);
         });
-        
+
         if (totalRisk === 0) {
             return {
                 topComponents: [],
@@ -546,7 +556,7 @@ export async function getTopRiskyComponents(limit: number = 5) {
         const componentAnalyses = [];
         for (const componentName of KNOWN_COMPONENTS) {
             const componentPattern = new RegExp(componentName, 'i');
-            const componentFindings = allFindingsData.filter(finding => 
+            const componentFindings = allFindingsData.filter(finding =>
                 componentPattern.test(finding.title) || (finding.description && componentPattern.test(finding.description))
             );
 
@@ -572,9 +582,9 @@ export async function getTopRiskyComponents(limit: number = 5) {
                 });
             }
         }
-        
+
         const sortedComponents = componentAnalyses.sort((a, b) => b.riskReductionPercent - a.riskReductionPercent);
-        
+
         return {
             topComponents: sortedComponents.slice(0, limit)
         };
