@@ -54,12 +54,6 @@ const FindingListSchema = z.object({
     results: z.array(FindingSchema),
 });
 
-const findingsCache = {
-    findings: [] as z.infer<typeof FindingSchema>[],
-    lastFetched: 0,
-    ttl: 5 * 60 * 1000, // 5 minute cache
-};
-
 // A helper to make authenticated requests to the DefectDojo API
 async function defectDojoFetch(url: string, options: RequestInit = {}) {
     if (!API_URL || !API_KEY) {
@@ -90,25 +84,20 @@ async function defectDojoFetch(url: string, options: RequestInit = {}) {
 }
 
 /**
- * Fetches all results from a paginated DefectDojo endpoint, ensuring that
- * essential query parameters (like `prefetch`) are preserved across all pages.
+ * Fetches all results from a paginated DefectDojo endpoint.
  */
 async function defectDojoFetchAll<T>(initialRelativeUrl: string): Promise<T[]> {
     const allResults: T[] = [];
     let nextUrl: string | null = initialRelativeUrl;
 
     while (nextUrl) {
-        // Our `defectDojoFetch` helper can handle both relative URLs (for the first call)
-        // and absolute URLs (for subsequent calls from `data.next`).
         const data = await defectDojoFetch(nextUrl);
-
         const results = data.results as T[] | undefined;
 
         if (results && results.length > 0) {
             allResults.push(...results);
         }
 
-        // Move to the next page, or break if we're done
         if (data.next) {
             nextUrl = data.next;
         } else {
@@ -118,14 +107,9 @@ async function defectDojoFetchAll<T>(initialRelativeUrl: string): Promise<T[]> {
     return allResults;
 }
 
-export async function getCachedAllFindings(): Promise<z.infer<typeof FindingSchema>[]> {
-    const now = Date.now();
-    if (findingsCache.findings.length > 0 && now - findingsCache.lastFetched < findingsCache.ttl) {
-        console.log("Returning findings from cache.");
-        return findingsCache.findings;
-    }
-
-    console.log("Cache is stale or empty. Fetching all active findings from API.");
+// This function is kept for components that still need to fetch all findings, like the KPI dashboard.
+export async function getAllFindings(): Promise<z.infer<typeof FindingSchema>[]> {
+    console.log("Fetching all active findings from API for KPI data.");
     const endpoint = 'findings/?active=true&duplicate=false&prefetch=test,test__engagement,test__engagement__product,test__test_type&limit=100';
 
     const allRawFindings = await defectDojoFetchAll<any>(endpoint);
@@ -149,9 +133,7 @@ export async function getCachedAllFindings(): Promise<z.infer<typeof FindingSche
         console.warn(`Encountered ${parsingErrors.length} findings with parsing errors. They will be excluded from the summary. First error:`, parsingErrors[0]);
     }
 
-    findingsCache.findings = successfullyParsedFindings;
-    findingsCache.lastFetched = now;
-    console.log(`Successfully fetched and parsed ${successfullyParsedFindings.length} findings.`);
+    console.log(`Successfully fetched and parsed ${successfullyParsedFindings.length} findings for KPI data.`);
     return successfullyParsedFindings;
 }
 
@@ -211,68 +193,51 @@ interface GetFindingsParams {
 
 export async function getFindings(params: GetFindingsParams): Promise<string> {
     try {
-        // Get all findings from cache (or fetch if stale)
-        const allFindings = await getCachedAllFindings();
+        const queryParams = new URLSearchParams({
+            duplicate: 'false',
+            active: params.active !== undefined ? String(params.active) : 'true',
+            limit: String(params.limit || 10),
+            prefetch: 'test,test__test_type',
+        });
 
-        let filteredFindings = allFindings;
+        if (params.severity) {
+            queryParams.set('severity', params.severity);
+        }
 
-        // Filter by product name
         if (params.productName) {
             const productId = await getProductIDByName(params.productName);
             if (productId) {
-                filteredFindings = filteredFindings.filter(f => {
-                    if (typeof f.test !== 'object' || !f.test || !f.test.engagement) return false;
-                    const engagement = f.test.engagement;
-                    return engagement.product?.id === productId || engagement.product_id === productId;
-                });
+                queryParams.set('test__engagement__product', String(productId));
             } else {
-                 return JSON.stringify({ message: `Product '${params.productName}' not found.` });
+                return JSON.stringify({ message: `Product '${params.productName}' not found.` });
             }
         }
 
-        // Filter by tool name
         if (params.toolName) {
             const lowerToolName = params.toolName.toLowerCase().trim();
             const toolKey = Object.keys(TOOL_ENGAGEMENT_MAP).find(key => key.includes(lowerToolName));
             const tool = toolKey ? TOOL_ENGAGEMENT_MAP[toolKey] : null;
 
             if (tool) {
-                filteredFindings = filteredFindings.filter(f => {
-                     if (typeof f.test !== 'object' || !f.test || !f.test.engagement) return false;
-                     return f.test.engagement.id === tool.id;
-                });
+                queryParams.set('test__engagement', String(tool.id));
             } else {
-                 return JSON.stringify({ message: `Tool '${params.toolName}' not found.` });
+                return JSON.stringify({ message: `Tool '${params.toolName}' not found.` });
             }
         }
 
-        // Filter by severity
-        if (params.severity) {
-            filteredFindings = filteredFindings.filter(f => f.severity === params.severity);
-        }
+        const endpoint = `findings/?${queryParams.toString()}`;
+        const data = await defectDojoFetch(endpoint);
+        const parsedFindings = FindingListSchema.parse(data);
 
-        // Apply active filter (defaulting to true)
-        const isActive = params.active !== undefined ? params.active : true;
-        filteredFindings = filteredFindings.filter(f => f.active === isActive);
-
-        // Sort by CVSS score (descending)
-        filteredFindings.sort((a, b) => cvssToNumber(b.cvssv3_score) - cvssToNumber(a.cvssv3_score));
-
-        const totalCount = filteredFindings.length;
-
-        // Apply limit
-        const limit = params.limit || 10;
-        const limitedFindings = filteredFindings.slice(0, limit);
-
-        if (limitedFindings.length === 0) {
+        if (parsedFindings.results.length === 0) {
             const criteria = [params.severity, params.productName, params.toolName].filter(Boolean).join(', ');
             return JSON.stringify({ message: `No active vulnerabilities were found for the specified criteria: ${criteria}.` });
         }
 
         return JSON.stringify({
-            totalCount: totalCount,
-            showing: limitedFindings.length,
-            findings: limitedFindings.map(f => ({
+            totalCount: parsedFindings.count,
+            showing: parsedFindings.results.length,
+            findings: parsedFindings.results.map(f => ({
                 id: f.id,
                 title: f.title,
                 cve: f.cve || 'N/A',
@@ -286,9 +251,10 @@ export async function getFindings(params: GetFindingsParams): Promise<string> {
         }, null, 2);
 
     } catch (error) {
-        return JSON.stringify({ error: `An exception occurred. Details: ${error instanceof Error ? error.message : String(error)}` });
+        return JSON.stringify({ error: `An exception occurred during getFindings. Details: ${error instanceof Error ? error.message : String(error)}` });
     }
 }
+
 
 export async function getVulnerabilityCountsByProduct(productName: string): Promise<Record<string, number>> {
     const severities = ['Critical', 'High', 'Medium', 'Low', 'Info'];
@@ -302,7 +268,7 @@ export async function getVulnerabilityCountsByProduct(productName: string): Prom
         }
 
         // We can use the cached findings to avoid another network call
-        const allFindings = await getCachedAllFindings();
+        const allFindings = await getAllFindings();
 
         const productFindings = allFindings.filter(f => {
             if (typeof f.test !== 'object' || !f.test || !f.test.engagement) return false;
@@ -352,7 +318,7 @@ export async function getOpenVsClosedCounts() {
 
 export async function getProductVulnerabilitySummary() {
     try {
-        const allFindings = await getCachedAllFindings();
+        const allFindings = await getAllFindings();
         if (!allFindings || allFindings.length === 0) {
             return {};
         }
@@ -412,7 +378,7 @@ export async function getTotalFindingCount() {
 
 export async function getTopCriticalVulnerabilityPerProduct(): Promise<string> {
     try {
-        const allFindings = await getCachedAllFindings();
+        const allFindings = await getAllFindings();
         const criticalFindings = allFindings.filter(f => f.severity === 'Critical');
 
         const PRODUCT_ID_MAP: Record<number, string> = Object.values(PRODUCT_MAP).reduce((acc, product) => {
@@ -465,7 +431,7 @@ export async function getTopCriticalVulnerabilityPerProduct(): Promise<string> {
 
 export async function getComponentImpact(componentName: string) {
     try {
-        const allFindingsData = await getCachedAllFindings();
+        const allFindingsData = await getAllFindings();
 
         if (!allFindingsData || allFindingsData.length === 0) {
             return { error: 'No active findings found to analyze.' };
@@ -535,7 +501,7 @@ export async function getComponentImpact(componentName: string) {
 
 export async function getTopRiskyComponents(limit: number = 5) {
     try {
-        const allFindingsData = await getCachedAllFindings();
+        const allFindingsData = await getAllFindings();
 
         if (!allFindingsData || allFindingsData.length === 0) {
             return { error: 'No active findings found to analyze.' };
