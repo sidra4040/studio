@@ -46,3 +46,66 @@ You are correct that your Python project used **Streamlit**, which provides a we
 | **Deployment**          | Deployed as a single Streamlit process.                                               | Deployed as a standard Node.js application, often using a process manager (like PM2) and a reverse proxy (like Nginx) for robustness and scalability. See `DEPLOY.md`. |
 
 In short, we have evolved the core logic of your Python script into a robust, industry-standard web application. While Streamlit is excellent for rapidly creating data apps, Next.js provides the foundation for building more complex, scalable, and highly customized user experiences. The "brain" is still the AI, but the application's "nervous system" is now a more sophisticated client-server model.
+
+---
+
+## Project Workflow & File Structure
+
+Here’s a step-by-step breakdown of how a user's question flows through the application and a guide to the key files involved.
+
+### Request Lifecycle (How it Works)
+
+1.  **User Sends a Message**:
+    *   You type a question into the chatbox and hit "Send".
+    *   **File**: `src/app/(app)/chat/page.tsx`
+    *   **Logic**: This React component captures your input. The `handleSendMessage` function adds your message to the chat history and calls a Server Action to get the AI's response.
+
+2.  **Calling the Backend (Server Action)**:
+    *   The frontend calls the `answerVulnerabilityQuestions` function.
+    *   **File**: `src/app/actions.ts`
+    *   **Logic**: This file acts as a secure bridge between the frontend (client) and the backend. It safely exposes your AI flow to the chat component without revealing any server-side code or secrets. It simply passes the request along to the AI flow.
+
+3.  **Orchestrating the AI (AI Flow)**:
+    *   The action calls the `answerVulnerabilityQuestions` flow.
+    *   **File**: `src/ai/flows/answer-vulnerability-questions.ts`
+    *   **Logic**: This is the application's "brain". It receives your question and makes the first call to the Medtronic GPT API. It also defines the "tools" (like `get_findings`) that the AI is allowed to use.
+
+4.  **AI Decides to Use a Tool**:
+    *   The Medtronic GPT API analyzes your question and the list of available tools. It determines that to answer your question, it needs data from DefectDojo.
+    *   It sends a response back to our application saying, "I need to call the `get_findings` tool with these arguments (e.g., `productName: 'CLEM'`)."
+
+5.  **Executing the Tool (Fetching Data)**:
+    *   The AI flow (`answer-vulnerability-questions.ts`) receives the AI's request to use a tool.
+    *   It calls the appropriate function from the `services` directory.
+    *   **File**: `src/services/defectdojo.ts`
+    *   **Logic**: This file is responsible for all communication with the DefectDojo API. The `getFindings` function builds the correct API URL with the right filters (e.g., `.../api/v2/findings/?test__engagement__product=10&severity=Critical`) and fetches the live vulnerability data.
+
+6.  **Sending Data Back to the AI**:
+    *   The data from DefectDojo (as JSON) is returned to the AI flow.
+    *   The flow then makes a *second* call to the Medtronic GPT API, sending the original question plus the new data from the tool. It essentially says, "Here's the data you asked for; now you can form your final answer."
+
+7.  **Generating the Final Answer**:
+    *   The Medtronic GPT API uses the provided data to generate a human-readable, Markdown-formatted answer.
+
+8.  **Displaying the Response**:
+    *   The final answer is sent all the way back through the call stack (Flow -> Action -> Page).
+    *   The `ChatPage` component receives the answer, adds it to the chat history, and renders it on the screen for you to see.
+
+### Key Directories and Files
+
+*   **`src/app/`**: The core of the Next.js application, containing all pages and routes.
+    *   `src/app/(app)/layout.tsx`: The main layout for the application, including the sidebar and header.
+    *   `src/app/(app)/chat/page.tsx`: The chat interface component. This is the UI you interact with directly.
+    *   `src/app/actions.ts`: The bridge between your UI and your backend logic (Server Actions).
+*   **`src/ai/`**: Contains all the AI-related logic.
+    *   `src/ai/flows/answer-vulnerability-questions.ts`: The central AI flow that orchestrates the conversation, manages tool use, and calls the Medtronic GPT API.
+*   **`src/components/`**: Reusable React components used throughout the application.
+    *   `src/components/ui/`: Components from the ShadCN UI library (Button, Card, etc.).
+*   **`src/services/`**: Modules for interacting with external APIs.
+    *   `src/services/defectdojo.ts`: The only place where the application communicates with the DefectDojo API. It handles authentication, data fetching, and shaping the data for the AI.
+    *   `src/services/defectdojo-maps.ts`: Contains hardcoded mappings for product and tool names to their DefectDojo IDs, ensuring reliable lookups.
+*   **`src/context/`**: Manages shared state across the application.
+    *   `src/context/DataContext.tsx`: Holds the chat message history so it can be accessed by any component.
+*   **`README.md`**: (This file) Project documentation.
+*   **`DEPLOY.md`**: Step-by-step instructions for deploying the application to a server.
+*   **`.env`**: Your local environment file where you store secret API keys. This file is not and should not be committed to Git.
