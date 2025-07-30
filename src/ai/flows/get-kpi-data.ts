@@ -64,7 +64,7 @@ export async function getKpiData(): Promise<KpiData> {
 
     // 4. Get Top 5 Vulnerable Products
     const topVulnerableProducts = productVulnerabilities
-      .sort((a, b) => b.total - a.total)
+      .sort((a, b) => b.count - a.count)
       .slice(0, 5)
       .map(p => ({name: p.name, count: p.count}));
 
