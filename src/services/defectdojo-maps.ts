@@ -156,16 +156,16 @@ export const PRODUCT_MAP: Record<string, { id: number; name: string }> = {
 // A simple list of known component names to help with parsing from vulnerability titles.
 // This helps standardize component names.
 export const KNOWN_COMPONENTS: string[] = [
-    "openssl", "libssl", "gnutls", "mbedTLS",
+    "openssl", "libssl", "gnutls", "mbedTLS", "wolfssl",
     "log4j", "logback", "spring-core", "spring-security", "hibernate", "jackson-databind", "commons-fileupload", "commons-collections", "struts2", "junit", "bouncycastle",
     "flask", "django", "numpy", "pandas", "requests", "pyyaml", "jinja2", "sqlalchemy", "cryptography", "python",
-    "jquery", "lodash", "moment.js", "angular", "react", "vue", "handlebars", "bootstrap", "express", "axios", "socket.io",
+    "jquery", "lodash", "moment.js", "angular", "react", "vue", "handlebars", "bootstrap", "express", "axios", "socket.io", "crypto-js",
     "laravel", "symfony", "phpmailer", "twig", "codeigniter",
-    "zlib", "libxml2", "curl", "libpng", "glibc",
+    "zlib", "libxml2", "curl", "libpng", "glibc", "go", "golang",
     "mysql-connector", "psycopg2", "mongoose", "sqlite", "knex.js", "typeorm",
-    "nginx", "apache", "tomcat", "httpd", "istio", "haproxy", "go",
+    "nginx", "apache", "tomcat", "httpd", "istio", "haproxy",
     "tensorflow", "pytorch", "scikit-learn", "keras", "xgboost",
     "aws-sdk", "google-cloud-storage", "azure-core", "boto3",
     "docker", "kubernetes", "helm", "jenkins", "terraform", "ansible",
-    "wolfssl", "libtommath"
-];
+    "libtommath"
+].sort((a, b) => b.length - a.length); // Sort by length descending to match longer names first

@@ -46,6 +46,8 @@ const FindingSchema = z.object({
     date: z.string(), // ISO date string
     component_name: z.string().nullable().optional(),
     component_version: z.string().nullable().optional(),
+    // Add product_name for cross-product analysis
+    product_name: z.string().optional().nullable(), 
 });
 
 
@@ -104,7 +106,7 @@ async function defectDojoFetchAll<T>(initialRelativeUrl: string): Promise<T[]> {
 
 
 async function getProductInfoByName(productName: string): Promise<{ id: number; name: string } | null> {
-    const lowerProductName = productName.trim().toLowerCase().replace(/ /g, '');
+    const lowerProductName = productName.trim().toLowerCase().replace(/[\s\-_]/g, '');
     
     const idNumber = parseInt(lowerProductName, 10);
     if (!isNaN(idNumber)) {
@@ -113,14 +115,14 @@ async function getProductInfoByName(productName: string): Promise<{ id: number; 
     }
 
     for (const key in PRODUCT_MAP) {
-        if (key.toLowerCase() === lowerProductName || PRODUCT_MAP[key].name.toLowerCase().replace(/ /g, '') === lowerProductName) {
+        if (key.toLowerCase() === lowerProductName || PRODUCT_MAP[key].name.toLowerCase().replace(/[\s\-_]/g, '') === lowerProductName) {
             return PRODUCT_MAP[key];
         }
     }
     
     try {
         const products = await defectDojoFetchAll<z.infer<typeof ProductSchema>>(`products/?limit=1000`);
-        const foundProduct = products.find(p => p.name.toLowerCase().replace(/ /g, '') === lowerProductName || String(p.id) === lowerProductName);
+        const foundProduct = products.find(p => p.name.toLowerCase().replace(/[\s\-_]/g, '') === lowerProductName || String(p.id) === lowerProductName);
         if (foundProduct) {
             return { id: foundProduct.id, name: foundProduct.name };
         }
@@ -152,7 +154,7 @@ function extractComponentFromTitle(title: string): string {
         // Use word boundaries to avoid matching substrings (e.g., 'go' in 'mongo')
         const regex = new RegExp(`\\b${component}\\b`, 'i');
         if (regex.test(lowerTitle)) {
-            return component;
+            return component === 'golang' ? 'go' : component;
         }
     }
     return 'unknown';
@@ -165,7 +167,7 @@ export async function getFindings(productName?: string, severity?: string, activ
             duplicate: 'false',
             active: String(active),
             limit: String(limit),
-            prefetch: 'test__test_type',
+            prefetch: 'test__test_type,test__engagement__product',
         });
 
         if (severity) {
@@ -204,17 +206,23 @@ export async function getFindings(productName?: string, severity?: string, activ
         return JSON.stringify({
             totalCount: parsedFindings.count,
             showing: parsedFindings.results.length,
-            findings: parsedFindings.results.map(f => ({
-                id: f.id,
-                title: f.title,
-                component: f.component_name || extractComponentFromTitle(f.title),
-                cve: f.cve || 'N/A',
-                cwe: f.cwe ? `CWE-${f.cwe}` : 'Unknown',
-                cvssv3_score: f.cvssv3_score || 'N/A',
-                severity: f.severity,
-                tool: (typeof f.test === 'object' && f.test?.test_type?.name) || 'Unknown',
-                date: f.date,
-            })),
+            findings: parsedFindings.results.map(f => {
+                const test = typeof f.test === 'object' ? f.test : null;
+                const engagement = typeof test?.engagement === 'object' ? test.engagement : null;
+                const product = typeof engagement?.product === 'object' ? engagement.product : null;
+                return {
+                    id: f.id,
+                    title: f.title,
+                    component: f.component_name || extractComponentFromTitle(f.title),
+                    product: product?.name || 'Unknown',
+                    cve: f.cve || 'N/A',
+                    cwe: f.cwe ? `CWE-${f.cwe}` : 'Unknown',
+                    cvssv3_score: f.cvssv3_score || 'N/A',
+                    severity: f.severity,
+                    tool: test?.test_type?.name || 'Unknown',
+                    date: f.date,
+                }
+            }),
         }, null, 2);
 
     } catch (error) {
@@ -229,17 +237,23 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
             active: 'true',
             duplicate: 'false',
             limit: '2000', // Fetch a large batch for analysis
-            prefetch: 'test__test_type'
+            prefetch: 'test__test_type,test__engagement__product'
         });
 
-        if (productName) {
-            const productInfo = await getProductInfoByName(productName);
-            if (productInfo) {
-                queryParams.set('test__engagement__product', String(productInfo.id));
+        // Handle multiple products for cross-product analysis
+        const productNames = productName ? productName.split(',').map(p => p.trim()) : [];
+        if (productNames.length > 0) {
+            const productIds = (await Promise.all(productNames.map(name => getProductInfoByName(name))))
+                                .filter(p => p !== null)
+                                .map(p => p!.id);
+
+            if (productIds.length > 0) {
+                queryParams.set('test__engagement__product__in', productIds.join(','));
             } else {
-                return { error: `Product '${productName}' not found.` };
+                 return { error: `None of the specified products were found: ${productName}` };
             }
         }
+
 
         if (severities && severities.length > 0) {
             queryParams.set('severity__in', severities.join(','));
@@ -251,12 +265,18 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
             return { message: "No active findings found for the specified criteria to analyze." };
         }
 
-        // Add extracted component name to each finding
-        const findingsWithDetails = allFindings.map(f => ({
-            ...f,
-            component: f.component_name || extractComponentFromTitle(f.title) || 'unknown',
-            tool: (typeof f.test === 'object' && f.test?.test_type?.name) || 'Unknown'
-        }));
+        // Add extracted component name and product name to each finding
+        const findingsWithDetails = allFindings.map(f => {
+            const test = typeof f.test === 'object' ? f.test : null;
+            const engagement = typeof test?.engagement === 'object' ? test.engagement : null;
+            const product = typeof engagement?.product === 'object' ? engagement.product : null;
+            return {
+                ...f,
+                component: f.component_name || extractComponentFromTitle(f.title) || 'unknown',
+                tool: test?.test_type?.name || 'Unknown',
+                product_name: product?.name || 'Unknown Product'
+            }
+        });
 
         if (analysisType === 'component_risk') {
             const componentVulns: Record<string, { count: number, critical: number, high: number, severities: Record<string, number> }> = {};
@@ -296,6 +316,7 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
                 results: sortedByDate.map(f => ({
                     title: f.title,
                     component: f.component,
+                    product: f.product_name,
                     date: f.date,
                     severity: f.severity,
                     id: f.id,
@@ -332,6 +353,36 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
                 .slice(0, limit);
 
             return { analysis: 'Tool Comparison', results: sortedTools };
+        }
+
+        if (analysisType === 'cross_product_component_usage') {
+             const componentUsage: Record<string, { products: Set<string>, count: number, critical: number, high: number }> = {};
+             
+             for (const f of findingsWithDetails) {
+                if (f.component === 'unknown' || f.product_name === 'Unknown Product') continue;
+                
+                if (!componentUsage[f.component]) {
+                    componentUsage[f.component] = { products: new Set(), count: 0, critical: 0, high: 0 };
+                }
+                
+                componentUsage[f.component].products.add(f.product_name);
+                componentUsage[f.component].count++;
+                if (f.severity === 'Critical') componentUsage[f.component].critical++;
+                if (f.severity === 'High') componentUsage[f.component].high++;
+             }
+
+             const sharedComponents = Object.entries(componentUsage)
+                .map(([name, data]) => ({ name, productCount: data.products.size, vuln_count: data.count, critical: data.critical, high: data.high, products: Array.from(data.products) }))
+                .filter(c => c.productCount > 1) // Only show components shared across more than one product
+                .sort((a, b) => {
+                    if (b.productCount !== a.productCount) return b.productCount - a.productCount;
+                    if (b.critical !== a.critical) return b.critical - a.critical;
+                    if (b.high !== a.high) return b.high - a.high;
+                    return b.vuln_count - a.vuln_count;
+                })
+                .slice(0, limit);
+
+            return { analysis: 'Cross-Product Component Usage', results: sharedComponents };
         }
 
 
