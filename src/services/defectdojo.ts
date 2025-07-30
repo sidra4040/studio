@@ -160,8 +160,19 @@ function extractComponentFromTitle(title: string): string {
     return 'unknown';
 }
 
+const GetFindingsInputSchema = z.object({
+    productName: z.string().optional(),
+    severity: z.string().optional(),
+    active: z.boolean().default(true),
+    limit: z.number().default(10),
+    toolName: z.string().optional(),
+    cve: z.string().optional(),
+    componentName: z.string().optional(),
+});
+type GetFindingsInput = z.infer<typeof GetFindingsInputSchema>;
 
-export async function getFindings(productName?: string, severity?: string, active: boolean = true, limit: number = 10, toolName?: string): Promise<string> {
+export async function getFindings(input: GetFindingsInput): Promise<string> {
+    const { productName, severity, active, limit, toolName, cve, componentName } = GetFindingsInputSchema.parse(input);
     try {
         const queryParams = new URLSearchParams({
             duplicate: 'false',
@@ -170,9 +181,8 @@ export async function getFindings(productName?: string, severity?: string, activ
             prefetch: 'test__test_type,test__engagement__product',
         });
 
-        if (severity) {
-            queryParams.set('severity', severity);
-        }
+        if (severity) queryParams.set('severity', severity);
+        if (cve) queryParams.set('cve', cve);
 
         if (productName) {
             const productInfo = await getProductInfoByName(productName);
@@ -193,13 +203,17 @@ export async function getFindings(productName?: string, severity?: string, activ
                 return JSON.stringify({ message: `Tool '${toolName}' not found.` });
             }
         }
+        
+        // This is a text search, not a direct filter, so it's broad.
+        if (componentName) queryParams.set('component_name', componentName);
+
 
         const endpoint = `findings/?${queryParams.toString()}`;
         const data = await defectDojoFetch(endpoint);
         const parsedFindings = FindingListSchema.parse(data);
 
         if (parsedFindings.results.length === 0) {
-            const criteria = [severity, productName, toolName].filter(Boolean).join(', ');
+            const criteria = [productName, severity, toolName, cve, componentName].filter(Boolean).join(', ');
             return JSON.stringify({ message: `No active vulnerabilities were found for the specified criteria: ${criteria}.` });
         }
 
@@ -242,6 +256,7 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
 
         let productsToAnalyze: {id: number, name: string}[] = [];
         let requestedProductName = 'All Products';
+        let singleProductName: string | undefined = undefined;
 
         // Handle single or multiple products correctly
         if (productName) {
@@ -251,13 +266,15 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
             productsToAnalyze = productInfos.filter(p => p !== null) as {id: number, name: string}[];
 
             if (productsToAnalyze.length > 0) {
-                const productIds = productsToAnalyze.map(p => p.id);
-                if (productIds.length > 1) {
+                 if (productsToAnalyze.length > 1) {
+                    const productIds = productsToAnalyze.map(p => p.id);
                     queryParams.set('test__engagement__product__in', productIds.join(','));
+                    requestedProductName = productsToAnalyze.map(p => p.name).join(', ');
                 } else {
-                    queryParams.set('test__engagement__product', productIds[0].toString());
+                    queryParams.set('test__engagement__product', productsToAnalyze[0].id.toString());
+                    requestedProductName = productsToAnalyze[0].name;
+                    singleProductName = productsToAnalyze[0].name;
                 }
-                requestedProductName = productsToAnalyze.map(p => p.name).join(', ');
             } else {
                  return { error: `None of the specified products were found: ${productName}` };
             }
@@ -280,17 +297,13 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
             const engagement = typeof test?.engagement === 'object' ? test.engagement : null;
             const productInfo = typeof engagement?.product === 'object' ? engagement.product : null;
             
-            let findingProductName = 'Unknown Product';
-            if (productInfo) {
+            let findingProductName = singleProductName || 'Unknown Product';
+             if (productInfo) {
                 findingProductName = productInfo.name;
             } else if (engagement?.product_id) {
-                // Fallback for cross-product queries where prefetch might not be perfect
                 const matchedProduct = productsToAnalyze.find(p => p.id === engagement.product_id);
                 if (matchedProduct) {
                     findingProductName = matchedProduct.name;
-                } else if (productsToAnalyze.length === 1) {
-                    // If only one product was requested, we can assume it's that one.
-                    findingProductName = productsToAnalyze[0].name;
                 }
             }
             
