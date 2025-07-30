@@ -272,7 +272,11 @@ function KpiDashboard() {
                                         borderColor: 'hsl(var(--border))'
                                     }}
                                 />
-                                <Bar dataKey="count" radius={[4, 4, 0, 0]} />
+                                <Bar dataKey="count" radius={[4, 4, 0, 0]}>
+                                    {productSeverityChartData.map((entry, index) => (
+                                        <Cell key={`cell-${index}`} fill={entry.fill} />
+                                    ))}
+                                </Bar>
                             </BarChart>
                         </ResponsiveContainer>
                     </div>
