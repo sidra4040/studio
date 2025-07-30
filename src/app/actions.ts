@@ -22,6 +22,7 @@ export async function answerVulnerabilityQuestions(
   return await answerVulnerabilityQuestionsFlow(input);
 }
 
+// These actions now call the refactored, non-Genkit functions.
 export async function getKpiData(): Promise<KpiData> {
     return await getKpiDataFlow();
 }

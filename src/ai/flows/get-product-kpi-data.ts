@@ -7,7 +7,6 @@
  * - ProductKpiData - The return type for the getProductKpiData function.
  */
 import {z} from 'genkit';
-import {ai} from '@/ai/genkit';
 import { getVulnerabilityCountsByProduct, getFindings } from '@/services/defectdojo';
 
 const ProductKpiDataSchema = z.object({
@@ -33,18 +32,9 @@ const ProductKpiInputSchema = z.object({
 });
 export type ProductKpiInput = z.infer<typeof ProductKpiInputSchema>;
 
-
+// This is no longer a Genkit flow, but a standard async function.
 export async function getProductKpiData(input: ProductKpiInput): Promise<ProductKpiData> {
-  return getProductKpiDataFlow(input);
-}
-
-const getProductKpiDataFlow = ai.defineFlow(
-  {
-    name: 'getProductKpiDataFlow',
-    inputSchema: ProductKpiInputSchema,
-    outputSchema: ProductKpiDataSchema,
-  },
-  async ({productName}) => {
+    const { productName } = input;
     
     // 1. Get severity counts for the product
     const severityCounts = await getVulnerabilityCountsByProduct(productName);
@@ -64,5 +54,4 @@ const getProductKpiDataFlow = ai.defineFlow(
         severityCounts,
         topCriticalFindings
     };
-  }
-);
+}
