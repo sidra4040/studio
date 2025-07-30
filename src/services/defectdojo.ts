@@ -240,16 +240,20 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
             prefetch: 'test__test_type,test__engagement__product'
         });
 
-        // Handle multiple products for cross-product analysis
-        const productNames = productName ? productName.split(',').map(p => p.trim()) : [];
-        if (productNames.length > 0) {
+        // Handle single or multiple products correctly
+        if (productName) {
+            const productNames = productName.split(',').map(p => p.trim());
             const productIds = (await Promise.all(productNames.map(name => getProductInfoByName(name))))
                                 .filter(p => p !== null)
                                 .map(p => p!.id);
 
             if (productIds.length > 0) {
-                // IMPORTANT: Use test__engagement__product__in for filtering by multiple product IDs
-                queryParams.set('test__engagement__product__in', productIds.join(','));
+                // **THE FIX**: Use the correct parameter based on the number of products.
+                if (productIds.length > 1) {
+                    queryParams.set('test__engagement__product__in', productIds.join(','));
+                } else {
+                    queryParams.set('test__engagement__product', productIds[0].toString());
+                }
             } else {
                  return { error: `None of the specified products were found: ${productName}` };
             }
@@ -492,3 +496,5 @@ export async function getTopCriticalVulnerabilityPerProduct(): Promise<string> {
         return JSON.stringify({ error: `An exception occurred: ${errorMessage}` });
     }
 }
+
+    
