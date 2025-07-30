@@ -101,14 +101,16 @@ function KpiDashboard() {
   const productSeverityChartData = useMemo(() => {
     if (!productKpiData) return [];
     const { severityCounts } = productKpiData;
-    return [
-      { name: 'Critical', count: severityCounts.critical, fill: severityColors.Critical },
-      { name: 'High', count: severityCounts.high, fill: severityColors.High },
-      { name: 'Medium', count: severityCounts.medium, fill: severityColors.Medium },
-      { name: 'Low', count: severityCounts.low, fill: severityColors.Low },
-      { name: 'Info', count: severityCounts.info, fill: severityColors.Info },
-    ];
-  }, [productKpiData]);
+    // The data for the chart needs to be in an array with a single object.
+    return [{
+      name: selectedProduct, // The product name can be used if needed, but the X-axis is severity
+      Critical: severityCounts.critical,
+      High: severityCounts.high,
+      Medium: severityCounts.medium,
+      Low: severityCounts.low,
+      Info: severityCounts.info,
+    }];
+  }, [productKpiData, selectedProduct]);
 
   if (isLoading) {
     return (
@@ -263,7 +265,7 @@ function KpiDashboard() {
                          <ResponsiveContainer width="100%" height={250}>
                             <BarChart data={productSeverityChartData}>
                                 <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                                <XAxis dataKey="name" stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false}/>
+                                <XAxis dataKey="name" type="category" stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} ticks={['Critical', 'High', 'Medium', 'Low', 'Info']} />
                                 <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false}/>
                                 <Tooltip
                                     cursor={{ fill: 'hsla(var(--accent))' }} 
@@ -272,11 +274,11 @@ function KpiDashboard() {
                                         borderColor: 'hsl(var(--border))'
                                     }}
                                 />
-                                <Bar dataKey="count" radius={[4, 4, 0, 0]}>
-                                    {productSeverityChartData.map((entry, index) => (
-                                        <Cell key={`cell-${index}`} fill={entry.fill} />
-                                    ))}
-                                </Bar>
+                                <Bar dataKey="Critical" fill={severityColors.Critical} radius={[4, 4, 0, 0]} />
+                                <Bar dataKey="High" fill={severityColors.High} radius={[4, 4, 0, 0]} />
+                                <Bar dataKey="Medium" fill={severityColors.Medium} radius={[4, 4, 0, 0]} />
+                                <Bar dataKey="Low" fill={severityColors.Low} radius={[4, 4, 0, 0]} />
+                                <Bar dataKey="Info" fill={severityColors.Info} radius={[4, 4, 0, 0]} />
                             </BarChart>
                         </ResponsiveContainer>
                     </div>
