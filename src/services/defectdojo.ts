@@ -241,6 +241,7 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
         });
 
         let productsToAnalyze: {id: number, name: string}[] = [];
+        let requestedProductName = 'All Products';
 
         // Handle single or multiple products correctly
         if (productName) {
@@ -256,6 +257,7 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
                 } else {
                     queryParams.set('test__engagement__product', productIds[0].toString());
                 }
+                requestedProductName = productsToAnalyze.map(p => p.name).join(', ');
             } else {
                  return { error: `None of the specified products were found: ${productName}` };
             }
@@ -286,6 +288,9 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
                 const matchedProduct = productsToAnalyze.find(p => p.id === engagement.product_id);
                 if (matchedProduct) {
                     findingProductName = matchedProduct.name;
+                } else if (productsToAnalyze.length === 1) {
+                    // If only one product was requested, we can assume it's that one.
+                    findingProductName = productsToAnalyze[0].name;
                 }
             }
             
@@ -322,7 +327,7 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
                 })
                 .slice(0, limit);
 
-            return { analysis: 'Component Risk', results: sortedComponents };
+            return { analysis: 'Component Risk', product: requestedProductName, results: sortedComponents };
         }
 
         if (analysisType === 'vulnerability_age') {
@@ -332,6 +337,7 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
 
             return {
                 analysis: 'Vulnerability Age',
+                product: requestedProductName,
                 results: sortedByDate.map(f => ({
                     title: f.title,
                     component: f.component,
@@ -371,7 +377,7 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
                 .sort((a, b) => b.count - a.count)
                 .slice(0, limit);
 
-            return { analysis: 'Tool Comparison', results: sortedTools };
+            return { analysis: 'Tool Comparison', product: requestedProductName, results: sortedTools };
         }
 
         if (analysisType === 'cross_product_component_usage') {
