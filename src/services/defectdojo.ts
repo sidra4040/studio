@@ -240,15 +240,17 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
             prefetch: 'test__test_type,test__engagement__product'
         });
 
+        let productsToAnalyze: {id: number, name: string}[] = [];
+
         // Handle single or multiple products correctly
         if (productName) {
             const productNames = productName.split(',').map(p => p.trim());
-            const productIds = (await Promise.all(productNames.map(name => getProductInfoByName(name))))
-                                .filter(p => p !== null)
-                                .map(p => p!.id);
+            const productInfos = await Promise.all(productNames.map(name => getProductInfoByName(name)));
+            
+            productsToAnalyze = productInfos.filter(p => p !== null) as {id: number, name: string}[];
 
-            if (productIds.length > 0) {
-                // **THE FIX**: Use the correct parameter based on the number of products.
+            if (productsToAnalyze.length > 0) {
+                const productIds = productsToAnalyze.map(p => p.id);
                 if (productIds.length > 1) {
                     queryParams.set('test__engagement__product__in', productIds.join(','));
                 } else {
@@ -274,12 +276,24 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
         const findingsWithDetails = allFindings.map(f => {
             const test = typeof f.test === 'object' ? f.test : null;
             const engagement = typeof test?.engagement === 'object' ? test.engagement : null;
-            const product = typeof engagement?.product === 'object' ? engagement.product : null;
+            const productInfo = typeof engagement?.product === 'object' ? engagement.product : null;
+            
+            let findingProductName = 'Unknown Product';
+            if (productInfo) {
+                findingProductName = productInfo.name;
+            } else if (engagement?.product_id) {
+                // Fallback for cross-product queries where prefetch might not be perfect
+                const matchedProduct = productsToAnalyze.find(p => p.id === engagement.product_id);
+                if (matchedProduct) {
+                    findingProductName = matchedProduct.name;
+                }
+            }
+            
             return {
                 ...f,
                 component: f.component_name || extractComponentFromTitle(f.title) || 'unknown',
                 tool: test?.test_type?.name || 'Unknown',
-                product_name: product?.name || 'Unknown Product'
+                product_name: findingProductName
             }
         });
 
