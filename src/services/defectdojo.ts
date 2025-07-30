@@ -104,7 +104,7 @@ async function defectDojoFetchAll<T>(initialRelativeUrl: string): Promise<T[]> {
 
 
 async function getProductInfoByName(productName: string): Promise<{ id: number; name: string } | null> {
-    const lowerProductName = productName.trim().toLowerCase();
+    const lowerProductName = productName.trim().toLowerCase().replace(/ /g, '');
     
     const idNumber = parseInt(lowerProductName, 10);
     if (!isNaN(idNumber)) {
@@ -113,14 +113,14 @@ async function getProductInfoByName(productName: string): Promise<{ id: number; 
     }
 
     for (const key in PRODUCT_MAP) {
-        if (key === lowerProductName || PRODUCT_MAP[key].name.toLowerCase() === lowerProductName || PRODUCT_MAP[key].name.toLowerCase().replace(/ /g, '') === lowerProductName) {
+        if (key.toLowerCase() === lowerProductName || PRODUCT_MAP[key].name.toLowerCase().replace(/ /g, '') === lowerProductName) {
             return PRODUCT_MAP[key];
         }
     }
     
     try {
         const products = await defectDojoFetchAll<z.infer<typeof ProductSchema>>(`products/?limit=1000`);
-        const foundProduct = products.find(p => p.name.toLowerCase() === lowerProductName || String(p.id) === lowerProductName);
+        const foundProduct = products.find(p => p.name.toLowerCase().replace(/ /g, '') === lowerProductName || String(p.id) === lowerProductName);
         if (foundProduct) {
             return { id: foundProduct.id, name: foundProduct.name };
         }
@@ -150,7 +150,7 @@ function extractComponentFromTitle(title: string): string {
     const lowerTitle = title.toLowerCase();
     for (const component of KNOWN_COMPONENTS) {
         // Use word boundaries to avoid matching substrings (e.g., 'go' in 'mongo')
-        const regex = new RegExp(`\\b${component}\\b`);
+        const regex = new RegExp(`\\b${component}\\b`, 'i');
         if (regex.test(lowerTitle)) {
             return component;
         }
@@ -229,6 +229,7 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
             active: 'true',
             duplicate: 'false',
             limit: '2000', // Fetch a large batch for analysis
+            prefetch: 'test__test_type'
         });
 
         if (productName) {
@@ -251,15 +252,16 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
         }
 
         // Add extracted component name to each finding
-        const findingsWithComponents = allFindings.map(f => ({
+        const findingsWithDetails = allFindings.map(f => ({
             ...f,
-            component: f.component_name || extractComponentFromTitle(f.title)
+            component: f.component_name || extractComponentFromTitle(f.title) || 'unknown',
+            tool: (typeof f.test === 'object' && f.test?.test_type?.name) || 'Unknown'
         }));
 
         if (analysisType === 'component_risk') {
             const componentVulns: Record<string, { count: number, critical: number, high: number, severities: Record<string, number> }> = {};
             
-            for (const f of findingsWithComponents) {
+            for (const f of findingsWithDetails) {
                 if (f.component === 'unknown') continue;
 
                 if (!componentVulns[f.component]) {
@@ -285,7 +287,7 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
         }
 
         if (analysisType === 'vulnerability_age') {
-            const sortedByDate = findingsWithComponents
+            const sortedByDate = findingsWithDetails
                 .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
                 .slice(0, limit);
 
@@ -301,6 +303,38 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
             };
         }
         
+        if (analysisType === 'tool_comparison') {
+            const toolStats: Record<string, { count: number; components: Record<string, number>; severities: Record<string, number> }> = {};
+
+            for (const f of findingsWithDetails) {
+                if (f.tool === 'Unknown') continue;
+
+                if (!toolStats[f.tool]) {
+                    toolStats[f.tool] = { count: 0, components: {}, severities: {} };
+                }
+
+                toolStats[f.tool].count++;
+                toolStats[f.tool].components[f.component] = (toolStats[f.tool].components[f.component] || 0) + 1;
+                toolStats[f.tool].severities[f.severity] = (toolStats[f.tool].severities[f.severity] || 0) + 1;
+            }
+
+            const sortedTools = Object.entries(toolStats)
+                .map(([name, data]) => {
+                    const mostAffectedComponent = Object.entries(data.components).sort((a, b) => b[1] - a[1])[0];
+                    return {
+                        name,
+                        count: data.count,
+                        mostAffectedComponent: mostAffectedComponent ? mostAffectedComponent[0] : 'N/A',
+                        severities: data.severities
+                    };
+                })
+                .sort((a, b) => b.count - a.count)
+                .slice(0, limit);
+
+            return { analysis: 'Tool Comparison', results: sortedTools };
+        }
+
+
         return { error: `Analysis type '${analysisType}' is not yet implemented.` };
 
     } catch (error) {
