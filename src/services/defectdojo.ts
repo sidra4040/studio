@@ -42,6 +42,10 @@ const FindingSchema = z.object({
     cve: z.string().nullable().optional(),
     cvssv3_score: z.union([z.string(), z.number()]).nullable().optional(),
     test: z.union([TestObjectSchema, z.number()]).optional().nullable(),
+    found_by: z.array(z.number()),
+    date: z.string(), // ISO date string
+    component_name: z.string().nullable().optional(),
+    component_version: z.string().nullable().optional(),
 });
 
 
@@ -98,38 +102,6 @@ async function defectDojoFetchAll<T>(initialRelativeUrl: string): Promise<T[]> {
     return allResults;
 }
 
-let allFindingsCache: z.infer<typeof FindingSchema>[] | null = null;
-async function getCachedAllFindings(): Promise<z.infer<typeof FindingSchema>[]> {
-     if (allFindingsCache) {
-        return allFindingsCache;
-    }
-    const endpoint = 'findings/?active=true&duplicate=false&prefetch=test,test__engagement,test__engagement__product,test__test_type&limit=100';
-
-    const allRawFindings = await defectDojoFetchAll<any>(endpoint);
-
-    const successfullyParsedFindings: z.infer<typeof FindingSchema>[] = [];
-    const parsingErrors: any[] = [];
-
-    for (const finding of allRawFindings) {
-        const result = FindingSchema.safeParse(finding);
-        if (result.success) {
-            successfullyParsedFindings.push(result.data);
-        } else {
-            parsingErrors.push({
-                findingId: finding.id,
-                errors: result.error.issues,
-            });
-        }
-    }
-
-    if (parsingErrors.length > 0) {
-        console.warn(`Encountered ${parsingErrors.length} findings with parsing errors. They will be excluded from the summary. First error:`, JSON.stringify(parsingErrors[0], null, 2));
-    }
-    
-    allFindingsCache = successfullyParsedFindings;
-    return allFindingsCache;
-}
-
 
 async function getProductInfoByName(productName: string): Promise<{ id: number; name: string } | null> {
     const lowerProductName = productName.trim().toLowerCase();
@@ -171,33 +143,39 @@ export async function getProductList(): Promise<{id: number, name: string}[]> {
     }
 }
 
-export async function getToolList() {
-    try {
-        return Object.values(TOOL_ENGAGEMENT_MAP).map(tool => tool.name);
-    } catch (error) {
-        return { error: error instanceof Error ? error.message : String(error) };
+/**
+ * Extracts a known component name from a vulnerability title.
+ */
+function extractComponentFromTitle(title: string): string {
+    const lowerTitle = title.toLowerCase();
+    for (const component of KNOWN_COMPONENTS) {
+        // Use word boundaries to avoid matching substrings (e.g., 'go' in 'mongo')
+        const regex = new RegExp(`\\b${component}\\b`);
+        if (regex.test(lowerTitle)) {
+            return component;
+        }
     }
+    return 'unknown';
 }
 
-export async function getFindings(productName?: string, severity?: string, active?: boolean, limit?: number, toolName?: string): Promise<string> {
+
+export async function getFindings(productName?: string, severity?: string, active: boolean = true, limit: number = 10, toolName?: string): Promise<string> {
     try {
         const queryParams = new URLSearchParams({
             duplicate: 'false',
-            active: active !== undefined ? String(active) : 'true',
-            limit: String(limit || 10),
-            prefetch: 'product,test__test_type',
+            active: String(active),
+            limit: String(limit),
+            prefetch: 'test__test_type',
         });
 
         if (severity) {
             queryParams.set('severity', severity);
         }
 
-        let productId: number | null = null;
         if (productName) {
             const productInfo = await getProductInfoByName(productName);
             if (productInfo) {
-                productId = productInfo.id;
-                queryParams.set('test__engagement__product', String(productId));
+                queryParams.set('test__engagement__product', String(productInfo.id));
             } else {
                 return JSON.stringify({ message: `Product '${productName}' not found.` });
             }
@@ -207,7 +185,6 @@ export async function getFindings(productName?: string, severity?: string, activ
             const lowerToolName = toolName.toLowerCase().trim();
             const toolKey = Object.keys(TOOL_ENGAGEMENT_MAP).find(key => key.includes(lowerToolName));
             const tool = toolKey ? TOOL_ENGAGEMENT_MAP[toolKey] : null;
-
             if (tool) {
                 queryParams.set('test__engagement', String(tool.id));
             } else {
@@ -230,13 +207,13 @@ export async function getFindings(productName?: string, severity?: string, activ
             findings: parsedFindings.results.map(f => ({
                 id: f.id,
                 title: f.title,
+                component: f.component_name || extractComponentFromTitle(f.title),
                 cve: f.cve || 'N/A',
                 cwe: f.cwe ? `CWE-${f.cwe}` : 'Unknown',
                 cvssv3_score: f.cvssv3_score || 'N/A',
                 severity: f.severity,
                 tool: (typeof f.test === 'object' && f.test?.test_type?.name) || 'Unknown',
-                description: f.description,
-                mitigation: f.mitigation,
+                date: f.date,
             })),
         }, null, 2);
 
@@ -244,6 +221,93 @@ export async function getFindings(productName?: string, severity?: string, activ
         return JSON.stringify({ error: `An exception occurred during getFindings. Details: ${error instanceof Error ? error.message : String(error)}` });
     }
 }
+
+
+export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 'tool_comparison' | 'vulnerability_age' | 'cross_product_component_usage', productName?: string, severities?: string[], limit: number = 5) {
+    try {
+        const queryParams = new URLSearchParams({
+            active: 'true',
+            duplicate: 'false',
+            limit: '2000', // Fetch a large batch for analysis
+        });
+
+        if (productName) {
+            const productInfo = await getProductInfoByName(productName);
+            if (productInfo) {
+                queryParams.set('test__engagement__product', String(productInfo.id));
+            } else {
+                return { error: `Product '${productName}' not found.` };
+            }
+        }
+
+        if (severities && severities.length > 0) {
+            queryParams.set('severity__in', severities.join(','));
+        }
+
+        const allFindings = await defectDojoFetchAll<z.infer<typeof FindingSchema>>(`findings/?${queryParams.toString()}`);
+
+        if (allFindings.length === 0) {
+            return { message: "No active findings found for the specified criteria to analyze." };
+        }
+
+        // Add extracted component name to each finding
+        const findingsWithComponents = allFindings.map(f => ({
+            ...f,
+            component: f.component_name || extractComponentFromTitle(f.title)
+        }));
+
+        if (analysisType === 'component_risk') {
+            const componentVulns: Record<string, { count: number, critical: number, high: number, severities: Record<string, number> }> = {};
+            
+            for (const f of findingsWithComponents) {
+                if (f.component === 'unknown') continue;
+
+                if (!componentVulns[f.component]) {
+                    componentVulns[f.component] = { count: 0, critical: 0, high: 0, severities: {} };
+                }
+                componentVulns[f.component].count++;
+                if (f.severity === 'Critical') componentVulns[f.component].critical++;
+                if (f.severity === 'High') componentVulns[f.component].high++;
+
+                componentVulns[f.component].severities[f.severity] = (componentVulns[f.component].severities[f.severity] || 0) + 1;
+            }
+
+            const sortedComponents = Object.entries(componentVulns)
+                .map(([name, data]) => ({ name, ...data }))
+                .sort((a, b) => {
+                    if (b.critical !== a.critical) return b.critical - a.critical;
+                    if (b.high !== a.high) return b.high - a.high;
+                    return b.count - a.count;
+                })
+                .slice(0, limit);
+
+            return { analysis: 'Component Risk', results: sortedComponents };
+        }
+
+        if (analysisType === 'vulnerability_age') {
+            const sortedByDate = findingsWithComponents
+                .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+                .slice(0, limit);
+
+            return {
+                analysis: 'Vulnerability Age',
+                results: sortedByDate.map(f => ({
+                    title: f.title,
+                    component: f.component,
+                    date: f.date,
+                    severity: f.severity,
+                    id: f.id,
+                }))
+            };
+        }
+        
+        return { error: `Analysis type '${analysisType}' is not yet implemented.` };
+
+    } catch (error) {
+        return { error: `An exception occurred during analysis. Details: ${error instanceof Error ? error.message : String(error)}` };
+    }
+}
+
 
 export async function getVulnerabilityCountsByProduct(productName: string): Promise<Record<string, number>> {
     const severities = ['Critical', 'High', 'Medium', 'Low', 'Info'];
@@ -256,11 +320,13 @@ export async function getVulnerabilityCountsByProduct(productName: string): Prom
             return counts;
         }
 
-        for (const severity of severities) {
-            const data = await defectDojoFetch(`findings/?test__engagement__product=${productInfo.id}&severity=${severity}&active=true&duplicate=false&limit=1`);
-            const parsedData = z.object({ count: z.number() }).parse(data);
-            counts[severity] = parsedData.count;
-            counts.Total += parsedData.count;
+        const allFindings = await defectDojoFetchAll<z.infer<typeof FindingSchema>>(`findings/?test__engagement__product=${productInfo.id}&active=true&duplicate=false`);
+        
+        for (const finding of allFindings) {
+            if (counts[finding.severity] !== undefined) {
+                 counts[finding.severity]++;
+                 counts.Total++;
+            }
         }
 
         return counts;
@@ -339,16 +405,4 @@ export async function getTopCriticalVulnerabilityPerProduct(): Promise<string> {
         const errorMessage = error instanceof Error ? error.message : String(error);
         return JSON.stringify({ error: `An exception occurred: ${errorMessage}` });
     }
-}
-
-// THIS FUNCTION IS NO LONGER USED AND WILL BE REMOVED
-export async function getComponentImpact(componentName: string) {
-    return { error: "This function is deprecated." };
-}
-
-// THIS FUNCTION IS NO LONGER USED AND WILL BE REMOVED
-export async function getTopRiskyComponents(limit: number = 5, productName?: string) {
-    // Re-implement this to be efficient if needed in the future,
-    // for now, the AI will use get_findings.
-    return { error: "This function is deprecated." };
 }

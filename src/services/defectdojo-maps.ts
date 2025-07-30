@@ -153,22 +153,19 @@ export const PRODUCT_MAP: Record<string, { id: number; name: string }> = {
   smart_sync_base: { id: 13, name: 'Smart Sync Base' },
 };
 
+// A simple list of known component names to help with parsing from vulnerability titles.
+// This helps standardize component names.
 export const KNOWN_COMPONENTS: string[] = [
-    "openssl",
-    "libxml2",
-    "log4j",
-    "spring-core",
-    "jackson-databind",
-    "libpng",
-    "curl",
-    "nginx",
-    "apache",
-    "jquery",
-    "lodash",
-    "express",
-    "python",
-    "django",
-    "go",
-    "wolfssl",
-    "libtommath"
+    "openssl", "libssl", "gnutls", "mbedTLS",
+    "log4j", "logback", "spring-core", "spring-security", "hibernate", "jackson-databind", "commons-fileupload", "commons-collections", "struts2", "junit", "bouncycastle",
+    "flask", "django", "numpy", "pandas", "requests", "pyyaml", "jinja2", "sqlalchemy", "cryptography", "python",
+    "jquery", "lodash", "moment.js", "angular", "react", "vue", "handlebars", "bootstrap", "express", "axios", "socket.io",
+    "laravel", "symfony", "phpmailer", "twig", "codeigniter",
+    "zlib", "libxml2", "curl", "libpng", "glibc",
+    "mysql-connector", "psycopg2", "mongoose", "sqlite", "knex.js", "typeorm",
+    "nginx", "apache", "tomcat", "httpd", "istio", "haproxy", "go",
+    "tensorflow", "pytorch", "scikit-learn", "keras", "xgboost",
+    "aws-sdk", "google-cloud-storage", "azure-core", "boto3",
+    "docker", "kubernetes", "helm", "jenkins", "terraform", "ansible",
+    "wolfssl", "libtommath"
 ];
