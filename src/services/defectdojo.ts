@@ -248,6 +248,7 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
                                 .map(p => p!.id);
 
             if (productIds.length > 0) {
+                // IMPORTANT: Use test__engagement__product__in for filtering by multiple product IDs
                 queryParams.set('test__engagement__product__in', productIds.join(','));
             } else {
                  return { error: `None of the specified products were found: ${productName}` };
