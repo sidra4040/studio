@@ -32,7 +32,7 @@ const TestObjectSchema = z.object({
 });
 
 
-export const FindingSchema = z.object({
+const FindingSchema = z.object({
     id: z.number(),
     title: z.string(),
     severity: z.string(),
@@ -107,9 +107,19 @@ export async function defectDojoFetchAll<T>(initialRelativeUrl: string): Promise
                 return [data as T];
             }
         }
+        
+        // Use the 'next' URL as is from the API response
+        let nextUrlFromApi = ('next' in data && data.next) ? data.next : null;
 
-        // Use the next URL as is from the API response
-        nextUrl = ('next' in data && data.next) ? data.next : null;
+        // CRITICAL FIX: Ensure the protocol from the original API_URL is maintained.
+        // The DefectDojo API sometimes returns 'http' in the next URL even if the original is 'https'.
+        if (nextUrlFromApi && API_URL?.startsWith('https')) {
+            const url = new URL(nextUrlFromApi);
+            url.protocol = 'https';
+            nextUrlFromApi = url.href;
+        }
+
+        nextUrl = nextUrlFromApi;
     }
     return allResults;
 }
