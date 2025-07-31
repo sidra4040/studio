@@ -21,12 +21,14 @@ const EngagementSchema = z.object({
     product_id: z.number().optional().nullable(),
 });
 
+const TestTypeSchema = z.object({
+    id: z.number(),
+    name: z.string(),
+});
+
 const TestObjectSchema = z.object({
     id: z.number(),
-    test_type: z.object({
-        id: z.number(),
-        name: z.string()
-    }).optional().nullable(),
+    test_type: z.union([TestTypeSchema, z.number()]).optional().nullable(),
     engagement: z.union([EngagementSchema, z.number()]).optional().nullable(),
 });
 
@@ -64,6 +66,8 @@ async function defectDojoFetch(url: string, options: RequestInit = {}) {
 
     const fullUrl = url.startsWith('http') ? url : `${API_URL.replace(/\/$/, '')}/api/v2/${url.replace(/^\//, '')}`;
 
+    console.log(`[DefectDojo Fetch] Calling API: ${fullUrl}`);
+
     const response = await fetch(fullUrl, {
         ...options,
         headers: {
@@ -76,9 +80,11 @@ async function defectDojoFetch(url: string, options: RequestInit = {}) {
 
     if (!response.ok) {
         const errorText = await response.text();
+        console.error(`[DefectDojo Fetch] Error: ${response.status} ${response.statusText}`, errorText);
         throw new Error(`Failed to fetch from DefectDojo: ${response.status} ${response.statusText}. Details: ${errorText}`);
     }
-
+    
+    console.log(`[DefectDojo Fetch] Successfully fetched data from: ${fullUrl}`);
     return response.json();
 }
 
@@ -96,6 +102,11 @@ async function defectDojoFetchAll<T>(initialRelativeUrl: string): Promise<T[]> {
 
         if (results && results.length > 0) {
             allResults.push(...results);
+        } else if (!('next' in data)) {
+            // Handle single object responses which are not in an array
+            if (data && typeof data === 'object' && !Array.isArray(data) && Object.keys(data).length > 0 && !data.results) {
+                return [data as T];
+            }
         }
 
         // Only paginated responses have a 'next' property
@@ -111,23 +122,27 @@ async function getProductInfoByName(productName: string): Promise<{ id: number; 
     // Check hardcoded map first for performance
     for (const key in PRODUCT_MAP) {
         if (key.toLowerCase() === lowerProductName || PRODUCT_MAP[key].name.toLowerCase().replace(/[\s\-_]/g, '') === lowerProductName) {
+            console.log(`[getProductInfoByName] Found product '${productName}' in cache.`);
             return PRODUCT_MAP[key];
         }
     }
     
     // If not in map, query the API dynamically
     try {
+        console.log(`[getProductInfoByName] Product '${productName}' not in cache, querying API...`);
         const products = await defectDojoFetchAll<z.infer<typeof ProductSchema>>(`products/?limit=1000`);
         const foundProduct = products.find(p => 
             p.name.toLowerCase().replace(/[\s\-_]/g, '') === lowerProductName || 
             String(p.id) === lowerProductName
         );
         if (foundProduct) {
+             console.log(`[getProductInfoByName] Found product '${productName}' via API.`);
             return { id: foundProduct.id, name: foundProduct.name };
         }
+        console.warn(`[getProductInfoByName] Product '${productName}' not found via API.`);
         return null;
     } catch (error) {
-        console.error(`Error fetching product info for ${productName}:`, error);
+        console.error(`[getProductInfoByName] Error fetching product info for ${productName}:`, error);
         return null;
     }
 }
@@ -194,13 +209,14 @@ export async function getFindings(input: GetFindingsInput): Promise<string> {
         }
         
         if (toolName) {
-            queryParams.set('test__test_type__name', toolName);
+             queryParams.set('test__test_type__name', toolName);
         }
         
         if (componentName) {
             queryParams.set('component_name', componentName);
         }
-
+        
+        console.log(`[getFindings] Querying with params: ${queryParams.toString()}`);
         const endpoint = `findings/?${queryParams.toString()}`;
         const data = await defectDojoFetch(endpoint);
         const parsedFindings = FindingListSchema.parse(data);
@@ -209,6 +225,8 @@ export async function getFindings(input: GetFindingsInput): Promise<string> {
             const criteria = [productName, severity, toolName, cve, componentName].filter(Boolean).join(', ');
             return JSON.stringify({ message: `No active vulnerabilities were found for the specified criteria: ${criteria}.` });
         }
+        
+        const allProductsList = await getProductList();
 
         return JSON.stringify({
             totalCount: parsedFindings.count,
@@ -217,17 +235,30 @@ export async function getFindings(input: GetFindingsInput): Promise<string> {
             findings: parsedFindings.results.map(f => {
                 const test = typeof f.test === 'object' ? f.test : null;
                 const engagement = typeof test?.engagement === 'object' ? test.engagement : null;
-                const product = typeof engagement?.product === 'object' ? engagement.product : null;
+                
+                let findingProduct = { id: 0, name: requestedProductName };
+                if (typeof engagement?.product === 'object' && engagement.product !== null) {
+                    findingProduct = {id: engagement.product.id, name: engagement.product.name};
+                } else if (engagement?.product_id){
+                    const p = allProductsList.find(p => p.id === engagement.product_id);
+                    if(p) findingProduct = p;
+                }
+
+                let testTypeName = 'Unknown';
+                 if (typeof test?.test_type === 'object' && test.test_type !== null) {
+                    testTypeName = test.test_type.name;
+                }
+                
                 return {
                     id: f.id,
                     title: f.title,
                     component: f.component_name || extractComponentFromTitle(f.title) || 'unknown',
-                    product: product?.name || requestedProductName,
+                    product: findingProduct.name,
                     cve: f.cve || 'N/A',
                     cwe: f.cwe ? `CWE-${f.cwe}` : 'Unknown',
                     cvssv3_score: f.cvssv3_score || 'N/A',
                     severity: f.severity,
-                    tool: test?.test_type?.name || 'Unknown',
+                    tool: testTypeName,
                     date: f.date,
                 }
             }),
@@ -247,6 +278,8 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
             limit: '2000', // Fetch a large batch for analysis
             prefetch: 'test__test_type,test__engagement__product'
         });
+        
+        console.log(`[analyzeVulnerabilityData] Starting analysis type: ${analysisType}`);
 
         let productsToAnalyze: {id: number, name: string}[] = [];
         let requestedProductName = 'All Products';
@@ -267,6 +300,7 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
                    requestedProductName = productsToAnalyze[0].name;
                 }
             } else {
+                 console.warn(`[analyzeVulnerabilityData] None of the specified products were found: ${productName}`);
                  return { error: `None of the specified products were found: ${productName}` };
             }
         }
@@ -275,10 +309,12 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
         if (severities && severities.length > 0) {
             queryParams.set('severity__in', severities.join(','));
         }
-
+        
+        console.log(`[analyzeVulnerabilityData] Querying findings with params: ${queryParams.toString()}`);
         const allFindings = await defectDojoFetchAll<z.infer<typeof FindingSchema>>(`findings/?${queryParams.toString()}`);
         
         if (allFindings.length === 0) {
+            console.log("[analyzeVulnerabilityData] No active findings found for the specified criteria.");
             return { message: "No active findings found for the specified criteria to analyze." };
         }
         
@@ -287,23 +323,28 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
         const findingsWithDetails = allFindings.map(f => {
             const test = typeof f.test === 'object' ? f.test : null;
             const engagement = typeof test?.engagement === 'object' ? test.engagement : null;
-            const product = typeof engagement?.product === 'object' ? engagement.product : null;
             
             let findingProductName = 'Unknown Product';
-            if (product) {
-                findingProductName = product.name;
-            } else if (engagement?.product_id) {
+            let testTypeName = 'Unknown';
+
+            if (engagement?.product_id) {
                 const matchedProduct = allProductsList.find(p => p.id === engagement.product_id);
                 if (matchedProduct) findingProductName = matchedProduct.name;
+            }
+
+            if (typeof test?.test_type === 'object' && test.test_type !== null) {
+                testTypeName = test.test_type.name;
             }
 
             return {
                 ...f,
                 component: f.component_name || extractComponentFromTitle(f.title) || 'unknown',
-                tool: test?.test_type?.name || 'Unknown',
+                tool: testTypeName,
                 product_name: findingProductName
             }
         });
+        
+        console.log(`[analyzeVulnerabilityData] Processing ${findingsWithDetails.length} findings.`);
 
         if (analysisType === 'component_risk') {
             const componentVulns: Record<string, { count: number; severities: Record<string, number> }> = {};
@@ -400,9 +441,10 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
                 if (f.severity === 'High') componentUsage[f.component].high++;
              }
 
+             const requiredProductNames = new Set(productsToAnalyze.map(p => p.name));
              const sharedComponents = Object.entries(componentUsage)
                 .map(([name, data]) => ({ name, productCount: data.products.size, vuln_count: data.count, critical: data.critical, high: data.high, products: Array.from(data.products) }))
-                .filter(c => c.productCount > 1) 
+                .filter(c => requiredProductNames.size > 0 ? Array.from(requiredProductNames).every(pName => c.products.includes(pName)) : c.productCount > 1) 
                 .sort((a, b) => {
                     if (b.productCount !== a.productCount) return b.productCount - a.productCount;
                     if (b.critical !== a.critical) return b.critical - a.critical;
@@ -447,6 +489,7 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
         return { error: `Analysis type '${analysisType}' is not yet implemented.` };
 
     } catch (error) {
+        console.error(`[analyzeVulnerabilityData] An exception occurred. Details:`, error);
         return { error: `An exception occurred during analysis. Details: ${error instanceof Error ? error.message : String(error)}` };
     }
 }
@@ -458,7 +501,7 @@ export async function getVulnerabilityCountsByProduct(productName: string): Prom
     try {
         const productInfo = await getProductInfoByName(productName);
         if (!productInfo) {
-            console.error(`Product '${productName}' not found for counts.`);
+            console.error(`[getVulnerabilityCountsByProduct] Product '${productName}' not found.`);
             return counts;
         }
 
@@ -473,7 +516,7 @@ export async function getVulnerabilityCountsByProduct(productName: string): Prom
 
         return counts;
     } catch(error) {
-        console.error(`Could not retrieve counts for ${productName}:`, error);
+        console.error(`[getVulnerabilityCountsByProduct] Could not retrieve counts for ${productName}:`, error);
         return counts; // Return empty counts on error
     }
 }
@@ -498,11 +541,13 @@ export async function getTotalFindingCount(productName?: string, severity?: stri
         }
 
         const endpoint = `findings/?${queryParams.toString()}`;
+        console.log(`[getTotalFindingCount] Querying with params: ${queryParams.toString()}`);
         const data = await defectDojoFetch(endpoint);
         const parsedData = z.object({ count: z.number() }).parse(data);
         return { count: parsedData.count };
     } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
+        console.error(`[getTotalFindingCount] Error: ${errorMessage}`);
         return { error: `Failed to retrieve total finding count: ${errorMessage}` };
     }
 }
@@ -534,7 +579,8 @@ export async function getTopCriticalVulnerabilityPerProduct(): Promise<string> {
 
         for (const product of allProducts) {
             if (!product.id || !product.name) continue;
-
+            
+            console.log(`[getTopCriticalVulnerabilityPerProduct] Fetching top critical for ${product.name}`);
             const data = await defectDojoFetch(`findings/?test__engagement__product=${product.id}&severity=Critical&active=true&duplicate=false&limit=1&ordering=-cvssv3_score`);
             const parsedFindings = FindingListSchema.parse(data);
 
@@ -565,3 +611,5 @@ export async function getTopCriticalVulnerabilityPerProduct(): Promise<string> {
         return JSON.stringify({ error: `An exception occurred: ${errorMessage}` });
     }
 }
+
+    
