@@ -99,7 +99,7 @@ async function defectDojoFetchAll<T>(initialRelativeUrl: string): Promise<T[]> {
         }
 
         // Only paginated responses have a 'next' property
-        nextUrl = 'next' in data ? data.next : null;
+        nextUrl = ('next' in data && data.next) ? data.next : null;
     }
     return allResults;
 }
@@ -179,7 +179,7 @@ export async function getFindings(input: GetFindingsInput): Promise<string> {
             prefetch: 'test__test_type,test__engagement__product',
         });
 
-        if (severity) queryParams.set('severity', severity);
+        if (severity) queryParams.set('severity__in', severity);
         if (cve) queryParams.set('cve', cve);
 
         let requestedProductName = 'All Products';
@@ -194,7 +194,6 @@ export async function getFindings(input: GetFindingsInput): Promise<string> {
         }
         
         if (toolName) {
-            // Directly filter by the tool's name (Test Type name)
             queryParams.set('test__test_type__name', toolName);
         }
         
@@ -240,7 +239,7 @@ export async function getFindings(input: GetFindingsInput): Promise<string> {
 }
 
 
-export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 'tool_comparison' | 'vulnerability_age' | 'cross_product_component_usage', productName?: string, severities?: string[], limit: number = 5) {
+export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 'tool_comparison' | 'vulnerability_age' | 'cross_product_component_usage' | 'product_risk', productName?: string, severities?: string[], limit: number = 5) {
     try {
         const queryParams = new URLSearchParams({
             active: 'true',
@@ -259,12 +258,12 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
             productsToAnalyze = productInfos.filter(p => p !== null) as {id: number, name: string}[];
 
             if (productsToAnalyze.length > 0) {
-                if (productsToAnalyze.length > 1) {
-                   const productIds = productsToAnalyze.map(p => p.id);
+                const productIds = productsToAnalyze.map(p => p.id);
+                if (productIds.length > 1) {
                    queryParams.set('test__engagement__product__in', productIds.join(','));
                    requestedProductName = productsToAnalyze.map(p => p.name).join(', ');
                 } else {
-                   queryParams.set('test__engagement__product', productsToAnalyze[0].id.toString());
+                   queryParams.set('test__engagement__product', productIds[0].toString());
                    requestedProductName = productsToAnalyze[0].name;
                 }
             } else {
@@ -282,30 +281,21 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
         if (allFindings.length === 0) {
             return { message: "No active findings found for the specified criteria to analyze." };
         }
+        
+        const allProductsList = await getProductList();
 
         const findingsWithDetails = allFindings.map(f => {
             const test = typeof f.test === 'object' ? f.test : null;
             const engagement = typeof test?.engagement === 'object' ? test.engagement : null;
-            const productInfo = typeof engagement?.product === 'object' ? engagement.product : null;
+            const product = typeof engagement?.product === 'object' ? engagement.product : null;
             
             let findingProductName = 'Unknown Product';
-            if (productInfo) {
-                findingProductName = productInfo.name;
+            if (product) {
+                findingProductName = product.name;
             } else if (engagement?.product_id) {
-                const matchedProduct = productsToAnalyze.find(p => p.id === engagement.product_id);
+                const matchedProduct = allProductsList.find(p => p.id === engagement.product_id);
                 if (matchedProduct) findingProductName = matchedProduct.name;
             }
-             
-            if (productsToAnalyze.length === 1) {
-                findingProductName = productsToAnalyze[0].name;
-            } else if (productsToAnalyze.length > 1) {
-                 const matchedProduct = productsToAnalyze.find(p => p.id === engagement?.product_id);
-                 if (matchedProduct) findingProductName = matchedProduct.name;
-            } else if (productName && productsToAnalyze.length === 0) {
-                // If a single product was requested but not found, this avoids 'Unknown Product'
-                findingProductName = productName;
-            }
-
 
             return {
                 ...f,
@@ -423,6 +413,35 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
 
             return { analysis: 'Cross-Product Component Usage', results: sharedComponents };
         }
+        
+        if (analysisType === 'product_risk') {
+            const productStats: Record<string, { count: number; severities: Record<string, number> }> = {};
+            
+            for (const f of findingsWithDetails) {
+                if (f.product_name === 'Unknown Product') continue;
+
+                if (!productStats[f.product_name]) {
+                    productStats[f.product_name] = { count: 0, severities: {} };
+                }
+                productStats[f.product_name].count++;
+                productStats[f.product_name].severities[f.severity] = (productStats[f.product_name].severities[f.severity] || 0) + 1;
+            }
+
+            const sortedProducts = Object.entries(productStats)
+                .map(([name, data]) => {
+                    const critical = data.severities['Critical'] || 0;
+                    const high = data.severities['High'] || 0;
+                    return { name, ...data, critical, high };
+                })
+                .sort((a, b) => {
+                    if (b.critical !== a.critical) return b.critical - a.critical;
+                    if (b.high !== a.high) return b.high - a.high;
+                    return b.count - a.count;
+                })
+                .slice(0, limit);
+            
+            return { analysis: 'Product Risk', results: sortedProducts };
+        }
 
 
         return { error: `Analysis type '${analysisType}' is not yet implemented.` };
@@ -460,15 +479,25 @@ export async function getVulnerabilityCountsByProduct(productName: string): Prom
 }
 
 
-export async function getTotalFindingCount(productName?: string) {
+export async function getTotalFindingCount(productName?: string, severity?: string) {
     try {
-        let endpoint = `findings/?duplicate=false&limit=1`;
+        const queryParams = new URLSearchParams({
+            duplicate: 'false',
+            limit: '1',
+            active: 'true',
+        });
+        
         if (productName) {
             const productInfo = await getProductInfoByName(productName);
             if (productInfo) {
-                endpoint += `&test__engagement__product=${productInfo.id}`;
+                queryParams.set('test__engagement__product', String(productInfo.id));
             }
         }
+        if (severity) {
+            queryParams.set('severity__in', severity);
+        }
+
+        const endpoint = `findings/?${queryParams.toString()}`;
         const data = await defectDojoFetch(endpoint);
         const parsedData = z.object({ count: z.number() }).parse(data);
         return { count: parsedData.count };
