@@ -51,10 +51,10 @@ async function defectDojoFetch(url: string, options: RequestInit = {}) {
  */
 export async function defectDojoFetchAll<T>(initialRelativeUrl: string): Promise<T[]> {
     const allResults: T[] = [];
-    let nextUrl: string | null = initialRelativeUrl;
+    let currentUrl: string | null = initialRelativeUrl;
     
-    while (nextUrl) {
-        const data = await defectDojoFetch(nextUrl);
+    while (currentUrl) {
+        const data = await defectDojoFetch(currentUrl);
         // Handle both paginated (results property) and non-paginated (direct array) responses
         const results = Array.isArray(data) ? data : (data.results as T[] | undefined);
 
@@ -68,16 +68,7 @@ export async function defectDojoFetchAll<T>(initialRelativeUrl: string): Promise
         }
         
         let nextUrlFromApi = ('next' in data && data.next) ? data.next : null;
-        
-        // Use http or https based on original API_URL, but don't assume the protocol of the 'next' URL is correct.
-        if (nextUrlFromApi) {
-            const originalProtocol = new URL(API_URL!).protocol;
-            const nextUrlObj = new URL(nextUrlFromApi);
-            nextUrlObj.protocol = originalProtocol;
-            nextUrl = nextUrlObj.href;
-        } else {
-            nextUrl = null;
-        }
+        currentUrl = nextUrlFromApi;
     }
     return allResults;
 }
@@ -158,7 +149,7 @@ export async function getFindings(input: GetFindingsInput): Promise<string> {
             duplicate: 'false',
             active: String(active),
             limit: String(limit),
-            prefetch: 'test__test_type,test__engagement,test__engagement__product',
+            prefetch: 'test,test__test_type,test__engagement,test__engagement__product',
         });
 
         if (severity) queryParams.set('severity__in', severity);
@@ -201,7 +192,7 @@ export async function getFindings(input: GetFindingsInput): Promise<string> {
             showing: parsedFindings.results.length,
             product: requestedProductName,
             findings: parsedFindings.results.map(f => {
-                const findingProduct = productMap.get(f.test.engagement.product) ?? 'Unknown Product';
+                const findingProduct = (f.test && f.test.engagement) ? (productMap.get(f.test.engagement.product) ?? 'Unknown Product') : 'Unknown Product';
                 
                 return {
                     id: f.id,
@@ -212,7 +203,7 @@ export async function getFindings(input: GetFindingsInput): Promise<string> {
                     cwe: f.cwe ? `CWE-${f.cwe}` : 'Unknown',
                     cvssv3_score: f.cvssv3_score || 'N/A',
                     severity: f.severity,
-                    tool: f.test.test_type.name || 'Unknown',
+                    tool: (f.test && f.test.test_type) ? f.test.test_type.name : 'Unknown',
                     date: f.date,
                 }
             }),
@@ -230,7 +221,7 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
             active: 'true',
             duplicate: 'false',
             limit: '2000', // Fetch a large batch for analysis
-            prefetch: 'test__test_type,test__engagement,test__engagement__product'
+            prefetch: 'test,test__test_type,test__engagement,test__engagement__product'
         });
         
         console.log(`[analyzeVulnerabilityData] Starting analysis type: ${analysisType}`);
@@ -276,11 +267,11 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
         const productMap = new Map(allProductsList.map(p => [p.id, p.name]));
 
         const findingsWithDetails = allFindings.map(f => {
-            const findingProductName = productMap.get(f.test.engagement.product) ?? 'Unknown Product';
+            const findingProductName = (f.test && f.test.engagement) ? (productMap.get(f.test.engagement.product) ?? 'Unknown Product') : 'Unknown Product';
             return {
                 ...f,
                 component: f.component_name || extractComponentFromTitle(f.title) || 'unknown',
-                tool: f.test.test_type.name || 'Unknown',
+                tool: (f.test && f.test.test_type) ? f.test.test_type.name : 'Unknown',
                 product_name: findingProductName
             }
         });

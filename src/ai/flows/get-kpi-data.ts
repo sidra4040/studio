@@ -63,9 +63,11 @@ export async function getKpiData(): Promise<KpiData> {
         }
 
         // Increment product counts
-        const productName = productMap.get(f.test.engagement.product);
-        if (productName && productVulnCounts.hasOwnProperty(productName)) {
-            productVulnCounts[productName]++;
+        if (f.test && f.test.engagement) {
+            const productName = productMap.get(f.test.engagement.product);
+            if (productName && productVulnCounts.hasOwnProperty(productName)) {
+                productVulnCounts[productName]++;
+            }
         }
     }
     
