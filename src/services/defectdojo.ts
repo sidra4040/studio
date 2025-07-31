@@ -17,8 +17,7 @@ const ProductSchema = z.object({
 const EngagementSchema = z.object({
     id: z.number(),
     name: z.string(),
-    product: z.union([ProductSchema, z.number()]).optional().nullable(),
-    product_id: z.number().optional().nullable(),
+    product: z.number(),
 });
 
 const TestTypeSchema = z.object({
@@ -28,8 +27,8 @@ const TestTypeSchema = z.object({
 
 const TestObjectSchema = z.object({
     id: z.number(),
-    test_type: z.union([TestTypeSchema, z.number()]).optional().nullable(),
-    engagement: z.union([EngagementSchema, z.number()]).optional().nullable(),
+    test_type: TestTypeSchema,
+    engagement: EngagementSchema,
 });
 
 
@@ -43,7 +42,7 @@ const FindingSchema = z.object({
     cwe: z.number().nullable(),
     cve: z.string().nullable().optional(),
     cvssv3_score: z.union([z.string(), z.number()]).nullable().optional(),
-    test: z.union([TestObjectSchema, z.number()]).optional().nullable(),
+    test: TestObjectSchema,
     found_by: z.array(z.number()),
     date: z.string(), // ISO date string
     component_name: z.string().nullable().optional(),
@@ -110,7 +109,7 @@ async function defectDojoFetchAll<T>(initialRelativeUrl: string): Promise<T[]> {
         }
 
         // Only paginated responses have a 'next' property
-        nextUrl = ('next' in data && data.next) ? data.next : null;
+        nextUrl = ('next' in data && data.next) ? data.next.replace(/^http:/, 'https:') : null;
     }
     return allResults;
 }
@@ -191,7 +190,7 @@ export async function getFindings(input: GetFindingsInput): Promise<string> {
             duplicate: 'false',
             active: String(active),
             limit: String(limit),
-            prefetch: 'test__test_type,test__engagement__product',
+            prefetch: 'test__test_type,test__engagement,test__engagement__product',
         });
 
         if (severity) queryParams.set('severity__in', severity);
@@ -227,38 +226,25 @@ export async function getFindings(input: GetFindingsInput): Promise<string> {
         }
         
         const allProductsList = await getProductList();
+        const productMap = new Map(allProductsList.map(p => [p.id, p.name]));
 
         return JSON.stringify({
             totalCount: parsedFindings.count,
             showing: parsedFindings.results.length,
             product: requestedProductName,
             findings: parsedFindings.results.map(f => {
-                const test = typeof f.test === 'object' ? f.test : null;
-                const engagement = typeof test?.engagement === 'object' ? test.engagement : null;
-                
-                let findingProduct = { id: 0, name: requestedProductName };
-                if (typeof engagement?.product === 'object' && engagement.product !== null) {
-                    findingProduct = {id: engagement.product.id, name: engagement.product.name};
-                } else if (engagement?.product_id){
-                    const p = allProductsList.find(p => p.id === engagement.product_id);
-                    if(p) findingProduct = p;
-                }
-
-                let testTypeName = 'Unknown';
-                 if (typeof test?.test_type === 'object' && test.test_type !== null) {
-                    testTypeName = test.test_type.name;
-                }
+                const findingProduct = productMap.get(f.test.engagement.product) ?? 'Unknown Product';
                 
                 return {
                     id: f.id,
                     title: f.title,
                     component: f.component_name || extractComponentFromTitle(f.title) || 'unknown',
-                    product: findingProduct.name,
+                    product: findingProduct,
                     cve: f.cve || 'N/A',
                     cwe: f.cwe ? `CWE-${f.cwe}` : 'Unknown',
                     cvssv3_score: f.cvssv3_score || 'N/A',
                     severity: f.severity,
-                    tool: testTypeName,
+                    tool: f.test.test_type.name || 'Unknown',
                     date: f.date,
                 }
             }),
@@ -276,7 +262,7 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
             active: 'true',
             duplicate: 'false',
             limit: '2000', // Fetch a large batch for analysis
-            prefetch: 'test__test_type,test__engagement__product'
+            prefetch: 'test__test_type,test__engagement,test__engagement__product'
         });
         
         console.log(`[analyzeVulnerabilityData] Starting analysis type: ${analysisType}`);
@@ -319,27 +305,14 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
         }
         
         const allProductsList = await getProductList();
+        const productMap = new Map(allProductsList.map(p => [p.id, p.name]));
 
         const findingsWithDetails = allFindings.map(f => {
-            const test = typeof f.test === 'object' ? f.test : null;
-            const engagement = typeof test?.engagement === 'object' ? test.engagement : null;
-            
-            let findingProductName = 'Unknown Product';
-            let testTypeName = 'Unknown';
-
-            if (engagement?.product_id) {
-                const matchedProduct = allProductsList.find(p => p.id === engagement.product_id);
-                if (matchedProduct) findingProductName = matchedProduct.name;
-            }
-
-            if (typeof test?.test_type === 'object' && test.test_type !== null) {
-                testTypeName = test.test_type.name;
-            }
-
+            const findingProductName = productMap.get(f.test.engagement.product) ?? 'Unknown Product';
             return {
                 ...f,
                 component: f.component_name || extractComponentFromTitle(f.title) || 'unknown',
-                tool: testTypeName,
+                tool: f.test.test_type.name || 'Unknown',
                 product_name: findingProductName
             }
         });
@@ -611,5 +584,7 @@ export async function getTopCriticalVulnerabilityPerProduct(): Promise<string> {
         return JSON.stringify({ error: `An exception occurred: ${errorMessage}` });
     }
 }
+
+    
 
     
