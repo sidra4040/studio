@@ -3,11 +3,39 @@
 
 import { z } from 'zod';
 import { PRODUCT_MAP, KNOWN_COMPONENTS } from './defectdojo-maps';
-import { FindingSchema, ProductSchema } from './defectdojo-types';
+import { ProductSchema, TestTypeSchema } from './defectdojo-types';
 
 
 const API_URL = process.env.DEFECTDOJO_API_URL;
 const API_KEY = process.env.DEFECTDOJO_API_KEY;
+
+const FindingSchema = z.object({
+    id: z.number(),
+    title: z.string(),
+    severity: z.string(),
+    description: z.string(),
+    mitigation: z.string().nullable().optional(),
+    active: z.boolean(),
+    cwe: z.number().nullable(),
+    cve: z.string().nullable().optional(),
+    cvssv3_score: z.union([z.string(), z.number()]).nullable().optional(),
+    test: z.object({
+        id: z.number(),
+        test_type: z.object({
+            id: z.number(),
+            name: z.string(),
+        }),
+        engagement: z.object({
+            id: z.number(),
+            product: z.number(),
+            name: z.string(),
+        }),
+    }),
+    found_by: z.array(z.number()),
+    date: z.string(),
+    component_name: z.string().nullable().optional(),
+    component_version: z.string().nullable().optional(),
+});
 
 const FindingListSchema = z.object({
     count: z.number(),
@@ -125,6 +153,19 @@ export async function getProductList(): Promise<{id: number, name: string}[]> {
     }
 }
 
+export async function getToolList(): Promise<string[]> {
+    try {
+        const tools = await defectDojoFetchAll<z.infer<typeof TestTypeSchema>>('test_types/?limit=200');
+        const toolList = tools.map(t => t.name).filter(name => !!name);
+        toolList.sort((a, b) => a.localeCompare(b));
+        return toolList;
+    } catch (error) {
+        console.error("Failed to fetch tool list", error);
+        return [];
+    }
+}
+
+
 /**
  * Extracts a known component name from a vulnerability title.
  */
@@ -200,7 +241,7 @@ export async function getFindings(input: GetFindingsInput) {
             showing: parsedFindings.results.length,
             product: requestedProductName,
             findings: parsedFindings.results.map(f => {
-                 let findingProduct = 'Unknown Product';
+                let findingProduct = 'Unknown Product';
                 if (f.test && f.test.engagement && f.test.engagement.product) {
                     findingProduct = productMap.get(f.test.engagement.product) ?? 'Unknown Product';
                 }
