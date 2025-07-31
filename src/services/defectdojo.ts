@@ -2,7 +2,7 @@
 'use server';
 
 import { z } from 'zod';
-import { TOOL_ENGAGEMENT_MAP, PRODUCT_MAP, KNOWN_COMPONENTS } from './defectdojo-maps';
+import { PRODUCT_MAP, KNOWN_COMPONENTS } from './defectdojo-maps';
 
 
 const API_URL = process.env.DEFECTDOJO_API_URL;
@@ -46,7 +46,6 @@ const FindingSchema = z.object({
     date: z.string(), // ISO date string
     component_name: z.string().nullable().optional(),
     component_version: z.string().nullable().optional(),
-    // Add product_name for cross-product analysis
     product_name: z.string().optional().nullable(), 
 });
 
@@ -91,15 +90,16 @@ async function defectDojoFetchAll<T>(initialRelativeUrl: string): Promise<T[]> {
     let nextUrl: string | null = initialRelativeUrl;
     
     while (nextUrl) {
-        // The 'next' URL from DefectDojo is absolute, so we can use it directly.
         const data = await defectDojoFetch(nextUrl);
-        const results = data.results as T[] | undefined;
+        // Handle both paginated (results property) and non-paginated (direct array) responses
+        const results = Array.isArray(data) ? data : (data.results as T[] | undefined);
 
         if (results && results.length > 0) {
             allResults.push(...results);
         }
 
-        nextUrl = data.next;
+        // Only paginated responses have a 'next' property
+        nextUrl = 'next' in data ? data.next : null;
     }
     return allResults;
 }
@@ -108,21 +108,20 @@ async function defectDojoFetchAll<T>(initialRelativeUrl: string): Promise<T[]> {
 async function getProductInfoByName(productName: string): Promise<{ id: number; name: string } | null> {
     const lowerProductName = productName.trim().toLowerCase().replace(/[\s\-_]/g, '');
     
-    const idNumber = parseInt(lowerProductName, 10);
-    if (!isNaN(idNumber)) {
-        const productById = Object.values(PRODUCT_MAP).find(p => p.id === idNumber);
-        if (productById) return productById;
-    }
-
+    // Check hardcoded map first for performance
     for (const key in PRODUCT_MAP) {
         if (key.toLowerCase() === lowerProductName || PRODUCT_MAP[key].name.toLowerCase().replace(/[\s\-_]/g, '') === lowerProductName) {
             return PRODUCT_MAP[key];
         }
     }
     
+    // If not in map, query the API dynamically
     try {
         const products = await defectDojoFetchAll<z.infer<typeof ProductSchema>>(`products/?limit=1000`);
-        const foundProduct = products.find(p => p.name.toLowerCase().replace(/[\s\-_]/g, '') === lowerProductName || String(p.id) === lowerProductName);
+        const foundProduct = products.find(p => 
+            p.name.toLowerCase().replace(/[\s\-_]/g, '') === lowerProductName || 
+            String(p.id) === lowerProductName
+        );
         if (foundProduct) {
             return { id: foundProduct.id, name: foundProduct.name };
         }
@@ -151,8 +150,7 @@ export async function getProductList(): Promise<{id: number, name: string}[]> {
 function extractComponentFromTitle(title: string): string {
     const lowerTitle = title.toLowerCase();
     for (const component of KNOWN_COMPONENTS) {
-        // Use word boundaries to avoid matching substrings (e.g., 'go' in 'mongo')
-        const regex = new RegExp(`\\b${component}\\b`, 'i');
+        const regex = new RegExp(`\\b${component.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
         if (regex.test(lowerTitle)) {
             return component === 'golang' ? 'go' : component;
         }
@@ -184,29 +182,25 @@ export async function getFindings(input: GetFindingsInput): Promise<string> {
         if (severity) queryParams.set('severity', severity);
         if (cve) queryParams.set('cve', cve);
 
+        let requestedProductName = 'All Products';
         if (productName) {
             const productInfo = await getProductInfoByName(productName);
             if (productInfo) {
                 queryParams.set('test__engagement__product', String(productInfo.id));
+                requestedProductName = productInfo.name;
             } else {
                 return JSON.stringify({ message: `Product '${productName}' not found.` });
             }
         }
-
+        
         if (toolName) {
-            const lowerToolName = toolName.toLowerCase().trim();
-            const toolKey = Object.keys(TOOL_ENGAGEMENT_MAP).find(key => key.includes(lowerToolName));
-            const tool = toolKey ? TOOL_ENGAGEMENT_MAP[toolKey] : null;
-            if (tool) {
-                queryParams.set('test__engagement', String(tool.id));
-            } else {
-                return JSON.stringify({ message: `Tool '${toolName}' not found.` });
-            }
+            // Directly filter by the tool's name (Test Type name)
+            queryParams.set('test__test_type__name', toolName);
         }
         
-        // This is a text search, not a direct filter, so it's broad.
-        if (componentName) queryParams.set('component_name', componentName);
-
+        if (componentName) {
+            queryParams.set('component_name', componentName);
+        }
 
         const endpoint = `findings/?${queryParams.toString()}`;
         const data = await defectDojoFetch(endpoint);
@@ -220,6 +214,7 @@ export async function getFindings(input: GetFindingsInput): Promise<string> {
         return JSON.stringify({
             totalCount: parsedFindings.count,
             showing: parsedFindings.results.length,
+            product: requestedProductName,
             findings: parsedFindings.results.map(f => {
                 const test = typeof f.test === 'object' ? f.test : null;
                 const engagement = typeof test?.engagement === 'object' ? test.engagement : null;
@@ -227,8 +222,8 @@ export async function getFindings(input: GetFindingsInput): Promise<string> {
                 return {
                     id: f.id,
                     title: f.title,
-                    component: f.component_name || extractComponentFromTitle(f.title),
-                    product: product?.name || 'Unknown',
+                    component: f.component_name || extractComponentFromTitle(f.title) || 'unknown',
+                    product: product?.name || requestedProductName,
                     cve: f.cve || 'N/A',
                     cwe: f.cwe ? `CWE-${f.cwe}` : 'Unknown',
                     cvssv3_score: f.cvssv3_score || 'N/A',
@@ -264,13 +259,13 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
             productsToAnalyze = productInfos.filter(p => p !== null) as {id: number, name: string}[];
 
             if (productsToAnalyze.length > 0) {
-                 if (productsToAnalyze.length > 1) {
-                    const productIds = productsToAnalyze.map(p => p.id);
-                    queryParams.set('test__engagement__product__in', productIds.join(','));
-                    requestedProductName = productsToAnalyze.map(p => p.name).join(', ');
+                if (productsToAnalyze.length > 1) {
+                   const productIds = productsToAnalyze.map(p => p.id);
+                   queryParams.set('test__engagement__product__in', productIds.join(','));
+                   requestedProductName = productsToAnalyze.map(p => p.name).join(', ');
                 } else {
-                    queryParams.set('test__engagement__product', productsToAnalyze[0].id.toString());
-                    requestedProductName = productsToAnalyze[0].name;
+                   queryParams.set('test__engagement__product', productsToAnalyze[0].id.toString());
+                   requestedProductName = productsToAnalyze[0].name;
                 }
             } else {
                  return { error: `None of the specified products were found: ${productName}` };
@@ -283,7 +278,7 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
         }
 
         const allFindings = await defectDojoFetchAll<z.infer<typeof FindingSchema>>(`findings/?${queryParams.toString()}`);
-
+        
         if (allFindings.length === 0) {
             return { message: "No active findings found for the specified criteria to analyze." };
         }
@@ -297,16 +292,21 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
             if (productInfo) {
                 findingProductName = productInfo.name;
             } else if (engagement?.product_id) {
-                // If analyzing multiple products, find the name from the initially fetched list
                 const matchedProduct = productsToAnalyze.find(p => p.id === engagement.product_id);
-                if (matchedProduct) {
-                    findingProductName = matchedProduct.name;
-                }
+                if (matchedProduct) findingProductName = matchedProduct.name;
             }
-             if (productsToAnalyze.length === 1) {
+             
+            if (productsToAnalyze.length === 1) {
                 findingProductName = productsToAnalyze[0].name;
+            } else if (productsToAnalyze.length > 1) {
+                 const matchedProduct = productsToAnalyze.find(p => p.id === engagement?.product_id);
+                 if (matchedProduct) findingProductName = matchedProduct.name;
+            } else if (productName && productsToAnalyze.length === 0) {
+                // If a single product was requested but not found, this avoids 'Unknown Product'
+                findingProductName = productName;
             }
-            
+
+
             return {
                 ...f,
                 component: f.component_name || extractComponentFromTitle(f.title) || 'unknown',
@@ -316,23 +316,24 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
         });
 
         if (analysisType === 'component_risk') {
-            const componentVulns: Record<string, { count: number, critical: number, high: number, severities: Record<string, number> }> = {};
+            const componentVulns: Record<string, { count: number; severities: Record<string, number> }> = {};
             
             for (const f of findingsWithDetails) {
                 if (f.component === 'unknown') continue;
 
                 if (!componentVulns[f.component]) {
-                    componentVulns[f.component] = { count: 0, critical: 0, high: 0, severities: {} };
+                    componentVulns[f.component] = { count: 0, severities: {} };
                 }
                 componentVulns[f.component].count++;
-                if (f.severity === 'Critical') componentVulns[f.component].critical++;
-                if (f.severity === 'High') componentVulns[f.component].high++;
-
                 componentVulns[f.component].severities[f.severity] = (componentVulns[f.component].severities[f.severity] || 0) + 1;
             }
 
             const sortedComponents = Object.entries(componentVulns)
-                .map(([name, data]) => ({ name, ...data }))
+                .map(([name, data]) => {
+                    const critical = data.severities['Critical'] || 0;
+                    const high = data.severities['High'] || 0;
+                    return { name, ...data, critical, high };
+                })
                 .sort((a, b) => {
                     if (b.critical !== a.critical) return b.critical - a.critical;
                     if (b.high !== a.high) return b.high - a.high;
@@ -397,7 +398,7 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
              const componentUsage: Record<string, { products: Set<string>, count: number, critical: number, high: number }> = {};
              
              for (const f of findingsWithDetails) {
-                if (f.component === 'unknown' || f.product_name === 'Unknown Product') continue;
+                if (f.component === 'unknown' || !f.product_name || f.product_name === 'Unknown Product') continue;
                 
                 if (!componentUsage[f.component]) {
                     componentUsage[f.component] = { products: new Set(), count: 0, critical: 0, high: 0 };
@@ -411,7 +412,7 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
 
              const sharedComponents = Object.entries(componentUsage)
                 .map(([name, data]) => ({ name, productCount: data.products.size, vuln_count: data.count, critical: data.critical, high: data.high, products: Array.from(data.products) }))
-                .filter(c => c.productCount > 1) // Only show components shared across more than one product
+                .filter(c => c.productCount > 1) 
                 .sort((a, b) => {
                     if (b.productCount !== a.productCount) return b.productCount - a.productCount;
                     if (b.critical !== a.critical) return b.critical - a.critical;
@@ -433,7 +434,6 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
 
 
 export async function getVulnerabilityCountsByProduct(productName: string): Promise<Record<string, number>> {
-    const severities = ['Critical', 'High', 'Medium', 'Low', 'Info'];
     const counts: Record<string, number> = { Critical: 0, High: 0, Medium: 0, Low: 0, Info: 0, Total: 0 };
     
     try {
@@ -460,9 +460,16 @@ export async function getVulnerabilityCountsByProduct(productName: string): Prom
 }
 
 
-export async function getTotalFindingCount() {
+export async function getTotalFindingCount(productName?: string) {
     try {
-        const data = await defectDojoFetch(`findings/?duplicate=false&limit=1`);
+        let endpoint = `findings/?duplicate=false&limit=1`;
+        if (productName) {
+            const productInfo = await getProductInfoByName(productName);
+            if (productInfo) {
+                endpoint += `&test__engagement__product=${productInfo.id}`;
+            }
+        }
+        const data = await defectDojoFetch(endpoint);
         const parsedData = z.object({ count: z.number() }).parse(data);
         return { count: parsedData.count };
     } catch (error) {
@@ -529,6 +536,3 @@ export async function getTopCriticalVulnerabilityPerProduct(): Promise<string> {
         return JSON.stringify({ error: `An exception occurred: ${errorMessage}` });
     }
 }
-
-    
-    
