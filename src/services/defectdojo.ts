@@ -3,59 +3,18 @@
 
 import { z } from 'zod';
 import { PRODUCT_MAP, KNOWN_COMPONENTS } from './defectdojo-maps';
+import { FindingSchema, ProductSchema } from './defectdojo-types';
 
 
 const API_URL = process.env.DEFECTDOJO_API_URL;
 const API_KEY = process.env.DEFECTDOJO_API_KEY;
-
-// Schemas for API responses
-const ProductSchema = z.object({
-    id: z.number(),
-    name: z.string(),
-});
-
-const EngagementSchema = z.object({
-    id: z.number(),
-    name: z.string(),
-    product: z.number(),
-});
-
-const TestTypeSchema = z.object({
-    id: z.number(),
-    name: z.string(),
-});
-
-const TestObjectSchema = z.object({
-    id: z.number(),
-    test_type: TestTypeSchema,
-    engagement: EngagementSchema,
-});
-
-
-const FindingSchema = z.object({
-    id: z.number(),
-    title: z.string(),
-    severity: z.string(),
-    description: z.string(),
-    mitigation: z.string().nullable().optional(),
-    active: z.boolean(),
-    cwe: z.number().nullable(),
-    cve: z.string().nullable().optional(),
-    cvssv3_score: z.union([z.string(), z.number()]).nullable().optional(),
-    test: TestObjectSchema,
-    found_by: z.array(z.number()),
-    date: z.string(), // ISO date string
-    component_name: z.string().nullable().optional(),
-    component_version: z.string().nullable().optional(),
-    product_name: z.string().optional().nullable(), 
-});
-
 
 const FindingListSchema = z.object({
     count: z.number(),
     next: z.string().nullable(),
     results: z.array(FindingSchema),
 });
+
 
 // A helper to make authenticated requests to the DefectDojo API
 async function defectDojoFetch(url: string, options: RequestInit = {}) {
@@ -108,18 +67,17 @@ export async function defectDojoFetchAll<T>(initialRelativeUrl: string): Promise
             }
         }
         
-        // Use the 'next' URL as is from the API response
         let nextUrlFromApi = ('next' in data && data.next) ? data.next : null;
-
-        // CRITICAL FIX: Ensure the protocol from the original API_URL is maintained.
-        // The DefectDojo API sometimes returns 'http' in the next URL even if the original is 'https'.
-        if (nextUrlFromApi && API_URL?.startsWith('https')) {
-            const url = new URL(nextUrlFromApi);
-            url.protocol = 'https';
-            nextUrlFromApi = url.href;
+        
+        // Use http or https based on original API_URL, but don't assume the protocol of the 'next' URL is correct.
+        if (nextUrlFromApi) {
+            const originalProtocol = new URL(API_URL!).protocol;
+            const nextUrlObj = new URL(nextUrlFromApi);
+            nextUrlObj.protocol = originalProtocol;
+            nextUrl = nextUrlObj.href;
+        } else {
+            nextUrl = null;
         }
-
-        nextUrl = nextUrlFromApi;
     }
     return allResults;
 }
