@@ -37,6 +37,7 @@ export const FindingSchema = z.object({
     active: z.boolean(),
     cwe: z.number().nullable(),
     cve: z.string().nullable().optional(),
+    // Correctly handle string, number, or null for cvssv3_score
     cvssv3_score: z.union([z.string(), z.number()]).nullable().optional(),
     test: TestObjectSchema,
     found_by: z.array(z.number()),
