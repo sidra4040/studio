@@ -256,9 +256,7 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
 
         let productsToAnalyze: {id: number, name: string}[] = [];
         let requestedProductName = 'All Products';
-        let singleProductName: string | undefined = undefined;
-
-        // Handle single or multiple products correctly
+        
         if (productName) {
             const productNames = productName.split(',').map(p => p.trim());
             const productInfos = await Promise.all(productNames.map(name => getProductInfoByName(name)));
@@ -273,7 +271,6 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
                 } else {
                     queryParams.set('test__engagement__product', productsToAnalyze[0].id.toString());
                     requestedProductName = productsToAnalyze[0].name;
-                    singleProductName = productsToAnalyze[0].name;
                 }
             } else {
                  return { error: `None of the specified products were found: ${productName}` };
@@ -291,20 +288,23 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
             return { message: "No active findings found for the specified criteria to analyze." };
         }
 
-        // Add extracted component name and product name to each finding
         const findingsWithDetails = allFindings.map(f => {
             const test = typeof f.test === 'object' ? f.test : null;
             const engagement = typeof test?.engagement === 'object' ? test.engagement : null;
             const productInfo = typeof engagement?.product === 'object' ? engagement.product : null;
             
-            let findingProductName = singleProductName || 'Unknown Product';
-             if (productInfo) {
+            let findingProductName = 'Unknown Product';
+            if (productInfo) {
                 findingProductName = productInfo.name;
             } else if (engagement?.product_id) {
+                // If analyzing multiple products, find the name from the initially fetched list
                 const matchedProduct = productsToAnalyze.find(p => p.id === engagement.product_id);
                 if (matchedProduct) {
                     findingProductName = matchedProduct.name;
                 }
+            }
+             if (productsToAnalyze.length === 1) {
+                findingProductName = productsToAnalyze[0].name;
             }
             
             return {
@@ -530,4 +530,5 @@ export async function getTopCriticalVulnerabilityPerProduct(): Promise<string> {
     }
 }
 
+    
     
