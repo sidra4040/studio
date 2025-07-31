@@ -7,7 +7,7 @@
  * - KpiData - The return type for the getKpiData function.
  */
 import {z} from 'zod';
-import {getProductList, getTotalFindingCount, getVulnerabilityCountsByProduct, getProductVulnerabilitySummary} from '@/services/defectdojo';
+import { getProductList, defectDojoFetchAll, FindingSchema } from '@/services/defectdojo';
 
 const KpiDataSchema = z.object({
   severityCounts: z.object({
@@ -37,42 +37,51 @@ export type KpiData = z.infer<typeof KpiDataSchema>;
 export async function getKpiData(): Promise<KpiData> {
     console.log("Fetching live KPI data from DefectDojo...");
     
-    // 1. Get All Products
-    const allProducts = await getProductList();
+    // 1. Get All Products and All Active/Closed Findings in parallel
+    const [allProducts, allActiveFindings, allClosedFindings] = await Promise.all([
+        getProductList(),
+        defectDojoFetchAll<z.infer<typeof FindingSchema>>('findings/?active=true&duplicate=false&limit=2000&prefetch=test__engagement__product'),
+        defectDojoFetchAll<z.infer<typeof FindingSchema>>('findings/?active=false&verified=true&duplicate=false&limit=2000') // Assuming closed means inactive but verified
+    ]);
     
-    // 2. Get Vulnerability Counts for each product to find totals and top products
+    const productMap = new Map(allProducts.map(p => [p.id, p.name]));
+    
     let totalSeverityCounts = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
-    let totalOpenFindings = 0;
-    
-    const productVulnerabilities = await Promise.all(
-        allProducts.map(async (product) => {
-            const counts = await getVulnerabilityCountsByProduct(product.name);
-            totalSeverityCounts.critical += counts.Critical;
-            totalSeverityCounts.high += counts.High;
-            totalSeverityCounts.medium += counts.Medium;
-            totalSeverityCounts.low += counts.Low;
-            totalSeverityCounts.info += counts.Info;
-            totalOpenFindings += counts.Total;
-            return { name: product.name, count: counts.Total };
-        })
-    );
+    const productVulnCounts: Record<string, number> = {};
+
+    for (const p of allProducts) {
+        productVulnCounts[p.name] = 0;
+    }
+
+    for (const f of allActiveFindings) {
+        // Increment severity counts
+        const severity = f.severity.toLowerCase();
+        if (severity in totalSeverityCounts) {
+            (totalSeverityCounts as any)[severity]++;
+        }
+
+        // Increment product counts
+        const productName = productMap.get(f.test.engagement.product);
+        if (productName && productVulnCounts.hasOwnProperty(productName)) {
+            productVulnCounts[productName]++;
+        }
+    }
     
     // 3. Get Open vs Closed Counts
-    const totalFindingsData = await getTotalFindingCount();
-    const totalFindings = totalFindingsData.count || 0;
-    const closedFindings = totalFindings - totalOpenFindings;
+    const openFindingsCount = allActiveFindings.length;
+    const closedFindingsCount = allClosedFindings.length;
 
     // 4. Get Top 5 Vulnerable Products
-    const topVulnerableProducts = productVulnerabilities
+    const topVulnerableProducts = Object.entries(productVulnCounts)
+      .map(([name, count]) => ({ name, count }))
       .sort((a, b) => b.count - a.count)
-      .slice(0, 5)
-      .map(p => ({name: p.name, count: p.count}));
+      .slice(0, 5);
 
     const result = {
         severityCounts: totalSeverityCounts,
         openVsClosedCounts: {
-            open: totalOpenFindings,
-            closed: closedFindings,
+            open: openFindingsCount,
+            closed: closedFindingsCount,
         },
         topVulnerableProducts: topVulnerableProducts,
         allProducts: allProducts

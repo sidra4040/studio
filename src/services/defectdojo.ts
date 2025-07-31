@@ -32,7 +32,7 @@ const TestObjectSchema = z.object({
 });
 
 
-const FindingSchema = z.object({
+export const FindingSchema = z.object({
     id: z.number(),
     title: z.string(),
     severity: z.string(),
@@ -90,7 +90,7 @@ async function defectDojoFetch(url: string, options: RequestInit = {}) {
 /**
  * Fetches all results from a paginated DefectDojo endpoint.
  */
-async function defectDojoFetchAll<T>(initialRelativeUrl: string): Promise<T[]> {
+export async function defectDojoFetchAll<T>(initialRelativeUrl: string): Promise<T[]> {
     const allResults: T[] = [];
     let nextUrl: string | null = initialRelativeUrl;
     
@@ -108,14 +108,14 @@ async function defectDojoFetchAll<T>(initialRelativeUrl: string): Promise<T[]> {
             }
         }
 
-        // Only paginated responses have a 'next' property
-        nextUrl = ('next' in data && data.next) ? data.next.replace(/^http:/, 'https:') : null;
+        // Use the next URL as is from the API response
+        nextUrl = ('next' in data && data.next) ? data.next : null;
     }
     return allResults;
 }
 
 
-async function getProductInfoByName(productName: string): Promise<{ id: number; name: string } | null> {
+export async function getProductInfoByName(productName: string): Promise<{ id: number; name: string } | null> {
     const lowerProductName = productName.trim().toLowerCase().replace(/[\s\-_]/g, '');
     
     // Check hardcoded map first for performance
@@ -584,7 +584,3 @@ export async function getTopCriticalVulnerabilityPerProduct(): Promise<string> {
         return JSON.stringify({ error: `An exception occurred: ${errorMessage}` });
     }
 }
-
-    
-
-    

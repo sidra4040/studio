@@ -8,15 +8,16 @@
  */
 import {z} from 'genkit';
 import { getVulnerabilityCountsByProduct, getFindings } from '@/services/defectdojo';
+import { getProductInfoByName } from '@/services/defectdojo';
 
 const ProductKpiDataSchema = z.object({
   severityCounts: z.object({
-    critical: z.number(),
-    high: z.number(),
-    medium: z.number(),
-    low: z.number(),
-    info: z.number(),
-    total: z.number(),
+    Critical: z.number(),
+    High: z.number(),
+    Medium: z.number(),
+    Low: z.number(),
+    Info: z.number(),
+    Total: z.number(),
   }),
   topCriticalFindings: z.array(z.object({
       id: z.number(),
@@ -40,7 +41,17 @@ export async function getProductKpiData(input: ProductKpiInput): Promise<Product
     const severityCounts = await getVulnerabilityCountsByProduct(productName);
 
     // 2. Get top 5 critical findings
-    const criticalFindingsRaw = await getFindings(productName, 'Critical', true, 5);
+    const productInfo = await getProductInfoByName(productName);
+    if (!productInfo) {
+        throw new Error(`Product ${productName} not found`);
+    }
+
+    const criticalFindingsRaw = await getFindings({
+        productName: productName,
+        severity: 'Critical',
+        limit: 5
+    });
+
     const criticalFindingsData = JSON.parse(criticalFindingsRaw);
 
     const topCriticalFindings = criticalFindingsData.findings ? criticalFindingsData.findings.map((f: any) => ({
