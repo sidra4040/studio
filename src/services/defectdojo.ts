@@ -3,44 +3,16 @@
 
 import { z } from 'zod';
 import { PRODUCT_MAP, KNOWN_COMPONENTS } from './defectdojo-maps';
-import { ProductSchema, TestTypeSchema } from './defectdojo-types';
+import { ProductSchema, TestTypeSchema, FindingSchema as DefectDojoFindingSchema } from './defectdojo-types';
 
 
 const API_URL = process.env.DEFECTDOJO_API_URL;
 const API_KEY = process.env.DEFECTDOJO_API_KEY;
 
-const FindingSchema = z.object({
-    id: z.number(),
-    title: z.string(),
-    severity: z.string(),
-    description: z.string(),
-    mitigation: z.string().nullable().optional(),
-    active: z.boolean(),
-    cwe: z.number().nullable(),
-    cve: z.string().nullable().optional(),
-    cvssv3_score: z.union([z.string(), z.number()]).nullable().optional(),
-    test: z.object({
-        id: z.number(),
-        test_type: z.object({
-            id: z.number(),
-            name: z.string(),
-        }),
-        engagement: z.object({
-            id: z.number(),
-            product: z.number(),
-            name: z.string(),
-        }),
-    }),
-    found_by: z.array(z.number()),
-    date: z.string(),
-    component_name: z.string().nullable().optional(),
-    component_version: z.string().nullable().optional(),
-});
-
 const FindingListSchema = z.object({
     count: z.number(),
     next: z.string().nullable(),
-    results: z.array(FindingSchema),
+    results: z.array(DefectDojoFindingSchema),
 });
 
 
@@ -100,7 +72,7 @@ export async function defectDojoFetchAll<T>(initialRelativeUrl: string): Promise
         let nextUrlFromApi = ('next' in data && data.next) ? data.next : null;
         
         // Prevent protocol change bug
-        if (nextUrlFromApi && API_URL?.startsWith('http://')) {
+        if (nextUrlFromApi && API_URL?.startsWith('http://') && nextUrlFromApi.startsWith('https://')) {
             nextUrlFromApi = nextUrlFromApi.replace('https://', 'http://');
         }
 
@@ -262,6 +234,7 @@ export async function getFindings(input: GetFindingsInput) {
         };
 
     } catch (error) {
+        console.error(`An exception occurred during getFindings. Details:`, error);
         return { error: `An exception occurred during getFindings. Details: ${error instanceof Error ? error.message : String(error)}` };
     }
 }
@@ -308,7 +281,7 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
         }
         
         console.log(`[analyzeVulnerabilityData] Querying findings with params: ${queryParams.toString()}`);
-        const allFindings = await defectDojoFetchAll<z.infer<typeof FindingSchema>>(`findings/?${queryParams.toString()}`);
+        const allFindings = await defectDojoFetchAll<z.infer<typeof DefectDojoFindingSchema>>(`findings/?${queryParams.toString()}`);
         
         if (allFindings.length === 0) {
             console.log("[analyzeVulnerabilityData] No active findings found for the specified criteria.");
@@ -447,7 +420,7 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
             const productStats: Record<string, { count: number; severities: Record<string, number> }> = {};
             
             for (const f of findingsWithDetails) {
-                if (f.product_name === 'Unknown Product') continue;
+                if (!f.product_name || f.product_name === 'Unknown Product') continue;
 
                 if (!productStats[f.product_name]) {
                     productStats[f.product_name] = { count: 0, severities: {} };
@@ -508,7 +481,7 @@ export async function getVulnerabilityCountsByProduct(productName: string): Prom
             return counts;
         }
 
-        const allFindings = await defectDojoFetchAll<z.infer<typeof FindingSchema>>(`findings/?test__engagement__product=${productInfo.id}&active=true&duplicate=false`);
+        const allFindings = await defectDojoFetchAll<z.infer<typeof DefectDojoFindingSchema>>(`findings/?test__engagement__product=${productInfo.id}&active=true&duplicate=false`);
         
         for (const finding of allFindings) {
             if (counts[finding.severity] !== undefined) {

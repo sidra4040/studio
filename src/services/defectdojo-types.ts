@@ -38,8 +38,8 @@ export const FindingSchema = z.object({
     cwe: z.number().nullable(),
     cve: z.string().nullable().optional(),
     // Correctly handle string, number, or null for cvssv3_score
-    cvssv3_score: z.union([z.string(), z.number()]).nullable().optional(),
-    test: TestObjectSchema,
+    cvssv3_score: z.union([z.string(), z.number()]).nullable(),
+    test: TestObjectSchema.optional(),
     found_by: z.array(z.number()),
     date: z.string(), // ISO date string
     component_name: z.string().nullable().optional(),
