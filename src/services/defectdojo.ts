@@ -214,6 +214,7 @@ export async function getFindings(input: GetFindingsInput) {
             product: requestedProductName,
             findings: parsedFindings.results.map(f => {
                 let findingProduct = 'Unknown Product';
+                // Add defensive check for test and test.engagement
                 if (f.test && f.test.engagement && f.test.engagement.product) {
                     findingProduct = productMap.get(f.test.engagement.product) ?? 'Unknown Product';
                 }
@@ -293,6 +294,7 @@ export async function analyzeVulnerabilityData(analysisType: 'component_risk' | 
 
         const findingsWithDetails = allFindings.map(f => {
             let findingProductName = 'Unknown Product';
+            // Add defensive check for test and test.engagement
             if (f.test && f.test.engagement && f.test.engagement.product) {
                 findingProductName = productMap.get(f.test.engagement.product) ?? 'Unknown Product';
             }
